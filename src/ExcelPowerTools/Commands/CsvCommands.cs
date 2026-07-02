@@ -90,7 +90,38 @@ namespace ExcelPowerTools.Commands
 
             try
             {
-                WriteWithBackup(session.SourcePath, doc.Save());
+                byte[] outBytes = doc.Save();
+
+                // Gate 1 — self-check: what we write must re-read to exactly what the grid holds.
+                string mismatch = CsvDiff.VerifyRoundTrip(outBytes, session.Format, doc.Records);
+                if (mismatch != null)
+                {
+                    Dialogs.Info("Save BLOCKED by the round-trip self-check:\n" + mismatch +
+                                 "\n\nThe file was not written.");
+                    return;
+                }
+
+                // Gate 2 — show what will change on disk, and skip no-op writes entirely.
+                if (File.Exists(session.SourcePath))
+                {
+                    byte[] diskBytes = File.ReadAllBytes(session.SourcePath);
+                    if (BytesEqual(diskBytes, outBytes))
+                    {
+                        Dialogs.Info("File already matches the grid — nothing to write.\n" + session.SourcePath);
+                        return;
+                    }
+
+                    var diff = CsvDiff.Summarize(CsvFile.Load(diskBytes).Records, doc.Records);
+                    string summary = diff.HasChanges
+                        ? diff.Describe()
+                        : "no value changes (formatting/quoting normalization only)";
+                    if (!Dialogs.Confirm("Save over:\n" + session.SourcePath +
+                                         "\n\nChanges: " + summary +
+                                         "\n\n(a .bak of the current file is kept)"))
+                        return;
+                }
+
+                WriteWithBackup(session.SourcePath, outBytes);
                 Dialogs.Info("Saved:\n" + session.SourcePath);
             }
             catch (Exception ex)
@@ -130,8 +161,23 @@ namespace ExcelPowerTools.Commands
 
             try
             {
-                WriteWithBackup(path, doc.Save());
-                Dialogs.Info("Exported to:\n" + path);
+                byte[] outBytes = doc.Save();
+
+                string mismatch = CsvDiff.VerifyRoundTrip(outBytes, fmt, doc.Records);
+                if (mismatch != null)
+                {
+                    Dialogs.Info("Export BLOCKED by the round-trip self-check:\n" + mismatch +
+                                 "\n\nThe file was not written.");
+                    return;
+                }
+
+                int collisions = CountFieldsContaining(doc.Records, separator);
+
+                WriteWithBackup(path, outBytes);
+                Dialogs.Info("Exported to:\n" + path +
+                             (collisions > 0
+                                 ? $"\n\n{collisions} field(s) contain '{separator}' and were quoted to stay intact."
+                                 : ""));
             }
             catch (Exception ex)
             {
@@ -238,6 +284,23 @@ namespace ExcelPowerTools.Commands
         }
 
         // ---- helpers ----------------------------------------------------------------------------
+
+        private static bool BytesEqual(byte[] a, byte[] b)
+        {
+            if (a == null || b == null || a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++)
+                if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        private static int CountFieldsContaining(IReadOnlyList<CsvRecord> records, char c)
+        {
+            int n = 0;
+            foreach (var r in records)
+                foreach (string f in r.Fields)
+                    if (f != null && f.IndexOf(c) >= 0) n++;
+            return n;
+        }
 
         /// <summary>Writes bytes with a one-level ".bak" backup and an atomic replace (no partial file on crash).</summary>
         private static void WriteWithBackup(string path, byte[] bytes)
