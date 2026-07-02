@@ -491,6 +491,7 @@ namespace ExcelPowerTools.Experimental
                 for (int r = headerIdx + 1; r < rows.Count; r++)
                 {
                     string[] f = rows[r];
+                    if (CsvDetect.IsCommentFields(f, "#")) continue;   // '#' rows are disabled signals — not pulled
                     if (f.Length <= iName || f.Length <= iNode || f.Length <= iOff || f.Length <= iBit || f.Length <= iBoard)
                         continue;
 
