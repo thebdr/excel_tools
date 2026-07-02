@@ -217,8 +217,10 @@ namespace ExcelPowerTools.Experimental
 
         private sealed class SheetGrid
         {
-            public string[,] Texts;   // [Rows, Cols], A1-anchored
+            public string[,] Texts;   // [Rows, Cols], A1-anchored snapshot — dimensions never change
             public int Rows, Cols;
+            public int NextFreeColumn;   // 1-based sheet column where the next new helper column goes
+            public readonly Dictionary<string, int> CreatedHelpers = new Dictionary<string, int>();
         }
 
         private sealed class CsvColumns
@@ -237,6 +239,7 @@ namespace ExcelPowerTools.Experimental
             object raw = range.Value2;
 
             var g = new SheetGrid { Rows = (int)lastRow, Cols = (int)lastCol };
+            g.NextFreeColumn = g.Cols + 1;
             g.Texts = new string[g.Rows, g.Cols];
             if (raw is object[,] grid)
             {
@@ -313,11 +316,15 @@ namespace ExcelPowerTools.Experimental
 
         private static int FindOrCreateHelperColumn(dynamic sheet, SheetGrid g, string marker, int headerSheetRow, UndoEntry undo)
         {
+            // Created earlier in THIS run (not part of the snapshot)?
+            if (g.CreatedHelpers.TryGetValue(marker, out int created)) return created;
+
+            // Already on the sheet when it was snapshotted?
             for (int c = 0; c < g.Cols; c++)
                 if (g.Texts[0, c] == marker) return c + 1;
 
-            int col = g.Cols + 1;
-            g.Cols = col;   // subsequent creations go one further right
+            int col = g.NextFreeColumn++;
+            g.CreatedHelpers[marker] = col;
 
             try { sheet.Columns(col).NumberFormat = "@"; } catch { }
             UndoManager.CaptureCell(undo, sheet, 1, col);
