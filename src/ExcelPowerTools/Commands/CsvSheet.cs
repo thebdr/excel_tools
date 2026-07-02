@@ -112,7 +112,7 @@ namespace ExcelPowerTools.Commands
         private static bool IsEmpty(object v) => v == null || (v is string s && s.Length == 0);
 
         /// <summary>Faithful cell text: exact for strings, displayed .Text for errors/formatted cells, invariant for doubles.</summary>
-        private static string CellText(object v, dynamic sheet, int sheetRow, int sheetCol)
+        internal static string CellText(object v, dynamic sheet, int sheetRow, int sheetCol)
         {
             if (v == null) return "";
             if (v is string s) return s;

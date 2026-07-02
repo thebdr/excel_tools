@@ -27,6 +27,9 @@ namespace ExcelPowerTools
           <button id='ptKeepValues' label='Keep Values Only' size='large'
                   imageMso='PasteValues' onAction='OnKeepValues'
                   screentip='Replace formulas with their values (visible cells only). Shortcut: Ctrl+Q'/>
+          <button id='ptRegexReplace' label='Regex Replace...' size='large'
+                  imageMso='ReplaceDialog' onAction='OnRegexReplace'
+                  screentip='Regex find &amp; replace with capture groups ($1) and a before/after preview — scoped to the selection or the whole sheet'/>
         </group>
         <group id='ptCsv' label='CSV'>
           <button id='ptCsvOpen' label='Open CSV/TXT' size='large' imageMso='FileOpen' onAction='OnOpenCsv'
@@ -68,6 +71,7 @@ namespace ExcelPowerTools
         // ---- ribbon callbacks -----------------------------------------------------------------
         public void OnChangeField(IRibbonControl control) => FieldEditorCommands.ChangeField();
         public void OnKeepValues(IRibbonControl control) => SelectionCommands.KeepValuesOnly();
+        public void OnRegexReplace(IRibbonControl control) => RegexReplaceCommands.ShowRegexReplace();
         public void OnOpenCsv(IRibbonControl control) => CsvCommands.OpenCsv();
         public void OnSaveCsv(IRibbonControl control) => CsvCommands.SaveCsv();
         public void OnExportCsv(IRibbonControl control) => CsvCommands.ExportSheetAsCsv();
