@@ -1,0 +1,14 @@
+{
+  "profiles": {
+    "Excel (load add-in)": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
+      "commandLineArgs": "\"C:\\Source\\Repos\\excel_tools\\src\\ExcelPowerTools\\bin\\Debug\\net48\\ExcelPowerTools-AddIn64.xll\""
+    },
+    "Excel": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
+      "commandLineArgs": "/x \"ExcelPowerTools-AddIn64.xll\""
+    }
+  }
+}

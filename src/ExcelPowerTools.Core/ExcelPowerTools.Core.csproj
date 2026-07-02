@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <!-- Disabled so these sources compile identically here and when linked into the (nullable-off)
+         net48 add-in assembly. -->
+    <Nullable>disable</Nullable>
+    <RootNamespace>ExcelPowerTools.Core</RootNamespace>
+    <AssemblyName>ExcelPowerTools.Core</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>

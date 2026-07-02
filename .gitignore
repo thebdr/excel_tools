@@ -1,0 +1,20 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Pp]ublish/
+*.dll
+*.xll
+*.pdb
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userprefs
+
+# Rider / others
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
