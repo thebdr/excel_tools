@@ -30,6 +30,8 @@ namespace ExcelPowerTools
           <button id='ptRegexReplace' label='Regex Replace...' size='large'
                   imageMso='ReplaceDialog' onAction='OnRegexReplace'
                   screentip='Regex find &amp; replace with capture groups ($1) and a before/after preview — scoped to the selection or the whole sheet'/>
+          <button id='ptSmartFill' label='Smart Fill Down' imageMso='FillDown' onAction='OnSmartFill'
+                  screentip='Fill down incrementing the trailing number (Z07→Z08…, IP last octet); two seeds set the step; skips hidden rows. Shortcut: Ctrl+Shift+D'/>
         </group>
         <group id='ptCsv' label='CSV'>
           <button id='ptCsvOpen' label='Open CSV/TXT' size='large' imageMso='FileOpen' onAction='OnOpenCsv'
@@ -72,6 +74,7 @@ namespace ExcelPowerTools
         public void OnChangeField(IRibbonControl control) => FieldEditorCommands.ChangeField();
         public void OnKeepValues(IRibbonControl control) => SelectionCommands.KeepValuesOnly();
         public void OnRegexReplace(IRibbonControl control) => RegexReplaceCommands.ShowRegexReplace();
+        public void OnSmartFill(IRibbonControl control) => FillCommands.SmartFillDown();
         public void OnOpenCsv(IRibbonControl control) => CsvCommands.OpenCsv();
         public void OnSaveCsv(IRibbonControl control) => CsvCommands.SaveCsv();
         public void OnExportCsv(IRibbonControl control) => CsvCommands.ExportSheetAsCsv();

@@ -37,6 +37,12 @@ namespace ExcelPowerTools.Interop
             }
         }
 
+        /// <summary>True when the row is hidden (filtered or manually); false on any COM error.</summary>
+        public static bool IsRowHidden(dynamic sheet, int row)
+        {
+            try { return (bool)sheet.Rows(row).Hidden; } catch { return false; }
+        }
+
         /// <summary>True if a worksheet with the given name exists in the workbook.</summary>
         public static bool WorksheetExists(dynamic workbook, string name)
         {
