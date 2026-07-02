@@ -7,34 +7,67 @@ namespace ExcelPowerTools.Tests.Experimental
     public class IoListLogicTests
     {
         [Theory]
-        [InlineData("80.3.2", "80", "3", "2")]
-        [InlineData(" 8.0.2 ", "8", "0", "2")]
-        [InlineData("08.03.02", "8", "3", "2")]     // numeric normalization
-        [InlineData("1.2.3.4", "1.2", "3", "4")]    // dotted node tolerated (card = last)
-        public void Parses_rack_slot_card(string input, string node, string offset, string card)
+        [InlineData("R1.S1.C2", "1", "1", "2")]     // the real legacy format
+        [InlineData("R1.S12.C1", "1", "12", "1")]
+        [InlineData("80.3.2", "80", "3", "2")]      // bare numeric variant
+        [InlineData(" r2.s3.c04 ", "2", "3", "4")]  // case + zero padding
+        public void Parses_rack_slot_card(string input, string rack, string slot, string card)
         {
-            Assert.True(IoListLogic.TryParseRackSlotCard(input, out string n, out string o, out string c));
-            Assert.Equal(node, n);
-            Assert.Equal(offset, o);
+            Assert.True(IoListLogic.TryParseRackSlotCard(input, out string r, out string s, out string c));
+            Assert.Equal(rack, r);
+            Assert.Equal(slot, s);
             Assert.Equal(card, c);
         }
 
         [Theory]
         [InlineData("")]
-        [InlineData("80.3")]
+        [InlineData("R1.S1")]
         [InlineData(null)]
         public void Rejects_incomplete_rack_slot_card(string input)
         {
             Assert.False(IoListLogic.TryParseRackSlotCard(input, out _, out _, out _));
         }
 
-        [Fact]
-        public void Builds_address_and_join_key()
+        [Theory]
+        [InlineData("I.0080.3.0", 'I', "80", "3", "0")]   // as stored in the legacy list (padded node)
+        [InlineData("O.0080.3.7", 'O', "80", "3", "7")]
+        [InlineData("i.5.0.15", 'I', "5", "0", "15")]
+        public void Parses_full_addresses(string input, char dir, string node, string offset, string bit)
         {
-            Assert.Equal("I.80.3.0", IoListLogic.BuildAddress('I', "80", "3", "0"));
-            Assert.Equal("O.8.0.15", IoListLogic.BuildAddress('O', "08", "00", "15"));
+            Assert.True(IoListLogic.TryParseAddress(input, out char d, out string n, out string o, out string b));
+            Assert.Equal(dir, d);
+            Assert.Equal(node, n);
+            Assert.Equal(offset, o);
+            Assert.Equal(bit, b);
+        }
+
+        [Theory]
+        [InlineData("80.3.0")]        // no direction
+        [InlineData("I.80.3")]        // too short
+        [InlineData("I.80.3.0.1")]    // too long
+        [InlineData("X.80.3.0")]      // bad direction
+        [InlineData("I.a.3.0")]       // non-numeric
+        [InlineData("")]
+        public void Rejects_non_addresses(string input)
+        {
+            Assert.False(IoListLogic.TryParseAddress(input, out _, out _, out _, out _));
+        }
+
+        [Fact]
+        public void Builds_address_and_direction_aware_join_key()
+        {
+            Assert.Equal("I.80.3.0", IoListLogic.BuildAddress('I', "0080", "3", "0"));
             Assert.Equal("80.3.0", IoListLogic.BuildAddress('\0', "80", "3", "0"));
-            Assert.Equal("80.3.2.0", IoListLogic.JoinKey("80", "03", "2", "00"));
+
+            // CSV side (node 80, offset 3, board 2, bit 0) meets IO-list side (I.0080.3.0 + R1.S1.C2).
+            Assert.True(IoListLogic.TryParseAddress("I.0080.3.0", out char d, out string n, out string o, out string b));
+            Assert.True(IoListLogic.TryParseRackSlotCard("R1.S1.C2", out _, out _, out string card));
+            Assert.Equal(IoListLogic.JoinKey(d, n, o, card, b),
+                         IoListLogic.JoinKey('I', "80", "3", "2", "0"));
+
+            // Same point, other direction — must NOT collide.
+            Assert.NotEqual(IoListLogic.JoinKey('I', "80", "3", "2", "0"),
+                            IoListLogic.JoinKey('O', "80", "3", "2", "0"));
         }
 
         [Theory]
@@ -51,16 +84,17 @@ namespace ExcelPowerTools.Tests.Experimental
         {
             var headers = new[]
             {
-                "Mnemonic", "ID", "Bit", "Description English language",
-                "Functional unit", "Location", "Device", "Type",
-                "Drawing", "Sheet", "PC Board\nRack.Slot.Card",
+                "Modello Modulo", "Targa Modulo", "PC Board Rack.Slot.Card", "ID", "Bit",
+                "Normal condition", "Slot", "Pin No.", "Description English language",
+                "Description language 2", "Functional unit", "Location", "Device", "Type",
+                "Drawing", "Sheet", "Mnemonic",
             };
 
-            Assert.Equal(0, IoListLogic.FindColumn(headers, "mnemonic"));
-            Assert.Equal(1, IoListLogic.FindColumn(headers, "id"));
-            Assert.Equal(3, IoListLogic.FindColumn(headers, "description english", "description"));
-            Assert.Equal(4, IoListLogic.FindColumn(headers, "functional unit"));
-            Assert.Equal(10, IoListLogic.FindColumn(headers, "rack.slot.card", "pc board"));
+            Assert.Equal(16, IoListLogic.FindColumn(headers, "mnemonic"));
+            Assert.Equal(3, IoListLogic.FindColumn(headers, "id"));
+            Assert.Equal(8, IoListLogic.FindColumn(headers, "description english language", "description english", "description"));
+            Assert.Equal(10, IoListLogic.FindColumn(headers, "functional unit"));
+            Assert.Equal(2, IoListLogic.FindColumn(headers, "rack.slot.card", "pc board"));
             Assert.Equal(-1, IoListLogic.FindColumn(headers, "does not exist"));
         }
 
@@ -75,12 +109,12 @@ namespace ExcelPowerTools.Tests.Experimental
         public void Mnemonic_map_joins_with_slash()
         {
             var map = new Dictionary<string, List<string>>();
-            IoListLogic.AddToMap(map, "80.3.2.0", "AUTO1_Z01");
-            IoListLogic.AddToMap(map, "80.3.2.0", "AUTO1_Z01_MIRROR");
-            IoListLogic.AddToMap(map, "80.3.2.0", "AUTO1_Z01");   // duplicate ignored
+            IoListLogic.AddToMap(map, "I.80.3.2.0", "AUTO1_Z01");
+            IoListLogic.AddToMap(map, "I.80.3.2.0", "AUTO1_Z01_MIRROR");
+            IoListLogic.AddToMap(map, "I.80.3.2.0", "AUTO1_Z01");   // duplicate ignored
 
-            Assert.Equal("AUTO1_Z01/AUTO1_Z01_MIRROR", IoListLogic.Joined(map, "80.3.2.0"));
-            Assert.Equal("", IoListLogic.Joined(map, "9.9.9.9"));
+            Assert.Equal("AUTO1_Z01/AUTO1_Z01_MIRROR", IoListLogic.Joined(map, "I.80.3.2.0"));
+            Assert.Equal("", IoListLogic.Joined(map, "I.9.9.9.9"));
         }
     }
 }

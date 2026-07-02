@@ -31,7 +31,7 @@ namespace ExcelPowerTools.Experimental
             dynamic sheet = app.ActiveSheet;
             if (sheet == null) return;
 
-            var g = ReadSheet(sheet);
+            SheetGrid g = ReadSheet(sheet);
             if (g == null) { Dialogs.Info("The sheet is empty."); return; }
 
             var csv = LocateCsvColumns(g, requireBoard: false);
@@ -84,7 +84,7 @@ namespace ExcelPowerTools.Experimental
             dynamic sheet = app.ActiveSheet;
             if (sheet == null) return;
 
-            var g = ReadSheet(sheet);
+            SheetGrid g = ReadSheet(sheet);
             if (g == null) { Dialogs.Info("The sheet is empty."); return; }
 
             var csv = LocateCsvColumns(g, requireBoard: true);
@@ -93,51 +93,54 @@ namespace ExcelPowerTools.Experimental
             string path = AskIoListPath();
             if (path == null) return;
 
-            // Read the IO list (hidden, read-only) into key -> rows of field values.
+            // Read the IO list (hidden, read-only, ALL sheets) into key -> rows of field values.
             Dictionary<string, List<string[]>> ioMap;
-            List<string> missingFields;
+            int sheetsUsed, rowsIndexed;
             using (new ExcelStateGuard(suppressEvents: true))
             {
-                ioMap = ReadIoList(app, path, out missingFields);
+                ioMap = ReadIoList(app, path, out sheetsUsed, out rowsIndexed);
             }
             if (ioMap == null) return;
+
+            char dir = DetectDirection(app, sheet);
 
             var undo = UndoManager.NewEntry("Get data from IO list", sheet);
             int matched = 0, withKey = 0;
             using (new ExcelStateGuard(manualCalculation: true))
             {
                 int dataRows = g.Rows - csv.HeaderSheetRow;
-                var keys = new string[dataRows];
+                var hits = new List<string[]>[dataRows];
                 for (int r = csv.HeaderSheetRow; r < g.Rows; r++)
                 {
+                    int i = r - csv.HeaderSheetRow;
                     string node = g.Texts[r, csv.Node], off = g.Texts[r, csv.Offset],
                            bit = g.Texts[r, csv.Bit], board = g.Texts[r, csv.Board];
-                    if (node.Length > 0 && off.Length > 0 && bit.Length > 0 && board.Length > 0)
-                    {
-                        keys[r - csv.HeaderSheetRow] = IoListLogic.JoinKey(node, off, board, bit);
-                        withKey++;
-                        if (ioMap.ContainsKey(keys[r - csv.HeaderSheetRow])) matched++;
-                    }
+                    if (node.Length == 0 || off.Length == 0 || bit.Length == 0 || board.Length == 0) continue;
+
+                    withKey++;
+                    var rows = new List<string[]>();
+                    if (dir != 'O' && ioMap.TryGetValue(IoListLogic.JoinKey('I', node, off, board, bit), out var li))
+                        rows.AddRange(li);
+                    if (dir != 'I' && ioMap.TryGetValue(IoListLogic.JoinKey('O', node, off, board, bit), out var lo))
+                        rows.AddRange(lo);
+                    if (rows.Count > 0) { hits[i] = rows; matched++; }
                 }
 
                 for (int f = 0; f < PullFields.Length; f++)
                 {
-                    if (missingFields.Contains(PullFields[f].Label)) continue;
-
                     int col = FindOrCreateHelperColumn(sheet, g, "//" + PullFields[f].Label, csv.HeaderSheetRow, undo);
                     var values = new string[dataRows];
                     for (int i = 0; i < dataRows; i++)
-                        values[i] = keys[i] != null && ioMap.TryGetValue(keys[i], out var rows)
-                            ? JoinField(rows, f)
-                            : "";
+                        values[i] = hits[i] != null ? JoinField(hits[i], f) : "";
                     WriteColumn(sheet, col, csv.HeaderSheetRow + 1, values, undo);
                 }
             }
             UndoManager.Push(undo);
 
-            Dialogs.Info($"IO-list data filled.\n\nRows with a complete node.offset.card.bit key: {withKey}\n" +
+            Dialogs.Info($"IO-list data filled from {sheetsUsed} sheet(s), {rowsIndexed} indexed row(s).\n\n" +
+                         $"CSV rows with a complete node.offset.card.bit key: {withKey}\n" +
                          $"Matched in the IO list: {matched}" +
-                         (missingFields.Count > 0 ? $"\nIO-list columns not found (skipped): {string.Join(", ", missingFields)}" : ""));
+                         (dir == '\0' ? "\n(direction unknown — matched both I and O)" : $"\n(direction {dir})"));
         }
 
         // ---- 3. Pull CSV mnemonics into the IO list -------------------------------------------------
@@ -149,7 +152,7 @@ namespace ExcelPowerTools.Experimental
             dynamic sheet = app.ActiveSheet;
             if (sheet == null) return;
 
-            var g = ReadSheet(sheet);
+            SheetGrid g = ReadSheet(sheet);
             if (g == null) { Dialogs.Info("The sheet is empty."); return; }
 
             int headerIdx = FindIoHeaderRow(g);
@@ -157,11 +160,12 @@ namespace ExcelPowerTools.Experimental
 
             var headers = RowOf(g, headerIdx);
             int iBoard = IoListLogic.FindColumn(headers, "rack.slot.card", "pc board");
-            int iBit = IoListLogic.FindColumn(headers, "bit");
-            if (iBoard < 0 || iBit < 0)
+            int iAddr = FindAddressColumn(g, headerIdx);
+            if (iBoard < 0 || iAddr < 0)
             {
-                Dialogs.Info("IO-list columns not found: " +
-                             (iBoard < 0 ? "'PC Board Rack.Slot.Card' " : "") + (iBit < 0 ? "'Bit'" : ""));
+                Dialogs.Info("IO-list layout not recognized: " +
+                             (iBoard < 0 ? "'PC Board Rack.Slot.Card' column not found. " : "") +
+                             (iAddr < 0 ? "no column with I|O.node.offset.bit addresses found." : ""));
                 return;
             }
 
@@ -169,12 +173,12 @@ namespace ExcelPowerTools.Experimental
             if (csvPaths == null || csvPaths.Length == 0) return;
 
             var mnemonics = new Dictionary<string, List<string>>();
-            var directions = new Dictionary<string, char>();
             var fileNotes = new List<string>();
             foreach (string path in csvPaths)
             {
-                int n = LoadCsvMnemonics(path, mnemonics, directions);
-                fileNotes.Add($"{Path.GetFileName(path)}: {(n < 0 ? "no Name/Node/Offset/Bit/Board columns" : n + " row(s)")}");
+                int n = LoadCsvMnemonics(path, mnemonics, out bool dirUnknown);
+                fileNotes.Add($"{Path.GetFileName(path)}: {(n < 0 ? "no Name/Node/Offset/Bit/Board columns" : n + " row(s)")}" +
+                              (dirUnknown ? " (direction unknown — indexed as both I and O)" : ""));
             }
 
             var undo = UndoManager.NewEntry("Get mnemonics from CSVs", sheet);
@@ -193,13 +197,12 @@ namespace ExcelPowerTools.Experimental
                     int i = r - headerSheetRow;
                     addrValues[i] = ""; mnValues[i] = "";
 
-                    if (!IoListLogic.TryParseRackSlotCard(g.Texts[r, iBoard], out string node, out string off, out string card))
+                    if (!IoListLogic.TryParseAddress(g.Texts[r, iAddr], out char dir, out string node, out string off, out string bit))
                         continue;
-                    string bit = g.Texts[r, iBit];
-                    if (bit.Length == 0) continue;
+                    if (!IoListLogic.TryParseRackSlotCard(g.Texts[r, iBoard], out _, out _, out string card))
+                        continue;
 
-                    string key = IoListLogic.JoinKey(node, off, card, bit);
-                    directions.TryGetValue(key, out char dir);
+                    string key = IoListLogic.JoinKey(dir, node, off, card, bit);
                     addrValues[i] = IoListLogic.BuildAddress(dir, node, off, bit);
                     mnValues[i] = IoListLogic.Joined(mnemonics, key);
                     if (mnValues[i].Length > 0) matched++;
@@ -360,9 +363,27 @@ namespace ExcelPowerTools.Experimental
             return -1;
         }
 
-        private static Dictionary<string, List<string[]>> ReadIoList(dynamic app, string path, out List<string> missingFields)
+        /// <summary>Finds the column holding I|O.node.offset.bit addresses by CONTENT (the legacy list labels it "Bit").</summary>
+        private static int FindAddressColumn(SheetGrid g, int headerIdx)
         {
-            missingFields = new List<string>();
+            int best = -1, bestHits = 0;
+            int scanTo = Math.Min(g.Rows, headerIdx + 1 + 60);
+            for (int c = 0; c < g.Cols; c++)
+            {
+                int hits = 0;
+                for (int r = headerIdx + 1; r < scanTo; r++)
+                    if (IoListLogic.TryParseAddress(g.Texts[r, c], out _, out _, out _, out _)) hits++;
+                if (hits > bestHits) { bestHits = hits; best = c; }
+            }
+            return best;
+        }
+
+        private static Dictionary<string, List<string[]>> ReadIoList(dynamic app, string path, out int sheetsUsed, out int rowsIndexed)
+        {
+            sheetsUsed = 0;
+            rowsIndexed = 0;
+            var map = new Dictionary<string, List<string[]>>();
+
             dynamic wb = null;
             bool prevAlerts = true;
             try { prevAlerts = (bool)app.DisplayAlerts; app.DisplayAlerts = false; } catch { }
@@ -371,47 +392,51 @@ namespace ExcelPowerTools.Experimental
             {
                 wb = app.Workbooks.Open(path, 0, true);   // UpdateLinks:=0, ReadOnly:=true
 
+                // Aggregate EVERY sheet that looks like an IO list (Q0001, P1001, ..., ASi).
                 foreach (dynamic ws in wb.Worksheets)
                 {
-                    var g = ReadSheet(ws);
+                    SheetGrid g = (SheetGrid)ReadSheet(ws);
                     if (g == null) continue;
                     int headerIdx = FindIoHeaderRow(g);
                     if (headerIdx < 0) continue;
 
                     var headers = RowOf(g, headerIdx);
                     int iBoard = IoListLogic.FindColumn(headers, "rack.slot.card", "pc board");
-                    int iBit = IoListLogic.FindColumn(headers, "bit");
-                    if (iBoard < 0 || iBit < 0) continue;
+                    int iAddr = FindAddressColumn(g, headerIdx);
+                    if (iBoard < 0 || iAddr < 0) continue;
 
                     var fieldCols = new int[PullFields.Length];
                     for (int f = 0; f < PullFields.Length; f++)
-                    {
                         fieldCols[f] = IoListLogic.FindColumn(headers, PullFields[f].Fragments);
-                        if (fieldCols[f] < 0) missingFields.Add(PullFields[f].Label);
-                    }
 
-                    var map = new Dictionary<string, List<string[]>>();
+                    sheetsUsed++;
                     for (int r = headerIdx + 1; r < g.Rows; r++)
                     {
-                        if (!IoListLogic.TryParseRackSlotCard(g.Texts[r, iBoard], out string node, out string off, out string card))
+                        if (!IoListLogic.TryParseAddress(g.Texts[r, iAddr], out char dir, out string node, out string off, out string bit))
                             continue;
-                        string bit = g.Texts[r, iBit];
-                        if (bit.Length == 0) continue;
+                        if (!IoListLogic.TryParseRackSlotCard(g.Texts[r, iBoard], out _, out _, out string card))
+                            continue;
 
-                        string key = IoListLogic.JoinKey(node, off, card, bit);
+                        string key = IoListLogic.JoinKey(dir, node, off, card, bit);
                         var fields = new string[PullFields.Length];
                         for (int f = 0; f < PullFields.Length; f++)
-                            fields[f] = fieldCols[f] >= 0 ? g.Texts[r, fieldCols[f]] : "";
+                            fields[f] = PullFields[f].Label == "Bit"
+                                ? bit                                                    // the parsed bit, not the raw address
+                                : (fieldCols[f] >= 0 ? g.Texts[r, fieldCols[f]] : "");
 
                         if (!map.TryGetValue(key, out var list)) map[key] = list = new List<string[]>();
                         list.Add(fields);
+                        rowsIndexed++;
                     }
-
-                    return map;   // first sheet with a Mnemonic header wins
                 }
 
-                Dialogs.Info("No sheet with a 'Mnemonic' header found in:\n" + path);
-                return null;
+                if (sheetsUsed == 0)
+                {
+                    Dialogs.Info("No usable IO-list sheet found (needs a 'Mnemonic' header, a " +
+                                 "'PC Board Rack.Slot.Card' column and I|O.n.o.b addresses):\n" + path);
+                    return null;
+                }
+                return map;
             }
             catch (Exception ex)
             {
@@ -439,8 +464,9 @@ namespace ExcelPowerTools.Experimental
 
         // ---- CSV file reading (headless, via Core) ----------------------------------------------------
 
-        private static int LoadCsvMnemonics(string path, Dictionary<string, List<string>> mnemonics, Dictionary<string, char> directions)
+        private static int LoadCsvMnemonics(string path, Dictionary<string, List<string>> mnemonics, out bool dirUnknown)
         {
+            dirUnknown = false;
             try
             {
                 var doc = CsvFile.Load(File.ReadAllBytes(path));
@@ -459,6 +485,8 @@ namespace ExcelPowerTools.Experimental
                 if (iName < 0 || iNode < 0 || iOff < 0 || iBit < 0 || iBoard < 0) return -1;
 
                 char dir = IoListLogic.DirectionFromName(Path.GetFileName(path));
+                dirUnknown = dir == '\0';
+
                 int count = 0;
                 for (int r = headerIdx + 1; r < rows.Count; r++)
                 {
@@ -472,9 +500,9 @@ namespace ExcelPowerTools.Experimental
                         || bit.Trim().Length == 0 || board.Trim().Length == 0)
                         continue;
 
-                    string key = IoListLogic.JoinKey(node, off, board, bit);
-                    IoListLogic.AddToMap(mnemonics, key, name);
-                    if (dir != '\0' && !directions.ContainsKey(key)) directions[key] = dir;
+                    // Direction is part of the key; an unknown direction is indexed as both so it still matches.
+                    if (dir != 'O') IoListLogic.AddToMap(mnemonics, IoListLogic.JoinKey('I', node, off, board, bit), name);
+                    if (dir != 'I') IoListLogic.AddToMap(mnemonics, IoListLogic.JoinKey('O', node, off, board, bit), name);
                     count++;
                 }
                 return count;
