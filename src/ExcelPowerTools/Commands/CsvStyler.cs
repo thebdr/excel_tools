@@ -22,17 +22,26 @@ namespace ExcelPowerTools.Commands
         {
             if (lastRow < 1 || lastCol < 1) return;
 
+            // "Number stored as text" green triangles: the per-cell Errors().Ignore approach is far too
+            // slow (one COM call per cell), so switch off that one check application-wide instead —
+            // the same as unticking Options ▸ Formulas ▸ "Numbers formatted as text".
+            try { app.ErrorCheckingOptions.NumberAsText = false; } catch { }
+
             dynamic all = sheet.Range(sheet.Cells(1, 1), sheet.Cells(lastRow, lastCol));
             all.Font.Name = MonospaceFont();
             try { all.FormatConditions.Delete(); } catch { }
 
+            // NOTE: FormatConditions.Add defaults StopIfTrue to TRUE, which makes the first matching
+            // rule swallow the rest (zebra was blocking the bold rule) — always set it false.
+
             // Comment rows (first cell starts with '#'): green font, row-wide, via conditional formatting.
             dynamic comment = all.FormatConditions.Add(XlExpression, Type.Missing, "=LEFT($A1,1)=\"#\"");
             comment.Font.Color = CommentGreen;
+            comment.StopIfTrue = false;
 
             int dataTop = headerRow >= 1 ? headerRow + 1 : 1;
 
-            // Zebra + bold-numbers over the data rows, via conditional formatting.
+            // Zebra + bold NON-numeric cells over the data rows, via conditional formatting.
             if (dataTop <= lastRow)
             {
                 dynamic data = sheet.Range(sheet.Cells(dataTop, 1), sheet.Cells(lastRow, lastCol));
@@ -40,9 +49,12 @@ namespace ExcelPowerTools.Commands
 
                 dynamic zebra = data.FormatConditions.Add(XlExpression, Type.Missing, "=MOD(ROW(),2)=0");
                 zebra.Interior.Color = ZebraGrey;
+                zebra.StopIfTrue = false;
 
-                dynamic bold = data.FormatConditions.Add(XlExpression, Type.Missing, "=ISNUMBER(VALUE(" + anchor + "))");
-                bold.Font.Bold = true;
+                dynamic nonNumeric = data.FormatConditions.Add(XlExpression, Type.Missing,
+                    "=AND(" + anchor + "<>\"\",NOT(ISNUMBER(VALUE(" + anchor + "))))");
+                nonNumeric.Font.Bold = true;
+                nonNumeric.StopIfTrue = false;
             }
 
             // Grey rows above the header.
