@@ -95,6 +95,16 @@ namespace ExcelPowerTools.Core.Experimental
                 : s;
         }
 
+        /// <summary>
+        /// True for virtual signals (Input/Output Type 5 or 6): not read from hardware I/O, and their
+        /// node/offset/bit/board are frequently stale copy-paste values — excluded from address matching.
+        /// </summary>
+        public static bool IsVirtualType(string typeValue)
+        {
+            string t = Norm(typeValue);
+            return t == "5" || t == "6";
+        }
+
         /// <summary>'I' or 'O' from a file/sheet name ("Plant_Outputs.csv" → 'O'); '\0' when undecidable.</summary>
         public static char DirectionFromName(string name)
         {

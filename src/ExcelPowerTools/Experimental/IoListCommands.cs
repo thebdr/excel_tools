@@ -105,7 +105,7 @@ namespace ExcelPowerTools.Experimental
             char dir = DetectDirection(app, sheet);
 
             var undo = UndoManager.NewEntry("Get data from IO list", sheet);
-            int matched = 0, withKey = 0;
+            int matched = 0, withKey = 0, virtualSkipped = 0;
             using (new ExcelStateGuard(manualCalculation: true))
             {
                 int dataRows = g.Rows - csv.HeaderSheetRow;
@@ -113,6 +113,12 @@ namespace ExcelPowerTools.Experimental
                 for (int r = csv.HeaderSheetRow; r < g.Rows; r++)
                 {
                     int i = r - csv.HeaderSheetRow;
+                    if (csv.Type >= 0 && IoListLogic.IsVirtualType(g.Texts[r, csv.Type]))
+                    {
+                        virtualSkipped++;   // types 5/6: virtual signals — address is not hardware I/O
+                        continue;
+                    }
+
                     string node = g.Texts[r, csv.Node], off = g.Texts[r, csv.Offset],
                            bit = g.Texts[r, csv.Bit], board = g.Texts[r, csv.Board];
                     if (node.Length == 0 || off.Length == 0 || bit.Length == 0 || board.Length == 0) continue;
@@ -139,7 +145,8 @@ namespace ExcelPowerTools.Experimental
 
             Dialogs.Info($"IO-list data filled from {sheetsUsed} sheet(s), {rowsIndexed} indexed row(s).\n\n" +
                          $"CSV rows with a complete node.offset.card.bit key: {withKey}\n" +
-                         $"Matched in the IO list: {matched}" +
+                         $"Matched in the IO list: {matched}\n" +
+                         $"Virtual rows skipped (type 5/6): {virtualSkipped}" +
                          (dir == '\0' ? "\n(direction unknown — matched both I and O)" : $"\n(direction {dir})"));
         }
 
@@ -176,8 +183,9 @@ namespace ExcelPowerTools.Experimental
             var fileNotes = new List<string>();
             foreach (string path in csvPaths)
             {
-                int n = LoadCsvMnemonics(path, mnemonics, out bool dirUnknown);
+                int n = LoadCsvMnemonics(path, mnemonics, out bool dirUnknown, out int virtualSkipped);
                 fileNotes.Add($"{Path.GetFileName(path)}: {(n < 0 ? "no Name/Node/Offset/Bit/Board columns" : n + " row(s)")}" +
+                              (virtualSkipped > 0 ? $", {virtualSkipped} virtual (type 5/6) skipped" : "") +
                               (dirUnknown ? " (direction unknown — indexed as both I and O)" : ""));
             }
 
@@ -230,6 +238,7 @@ namespace ExcelPowerTools.Experimental
         {
             public int HeaderSheetRow;   // 1-based sheet row of the header (== header index + 1)
             public int Node, Offset, Bit, Board;
+            public int Type;             // "Input Type"/"Output Type" — -1 when absent (no virtual filtering)
         }
 
         private static SheetGrid ReadSheet(dynamic sheet)
@@ -285,6 +294,7 @@ namespace ExcelPowerTools.Experimental
                 Offset = IoListLogic.FindColumn(headers, "offset"),
                 Bit = IoListLogic.FindColumn(headers, "bit"),
                 Board = IoListLogic.FindColumn(headers, "board number", "board"),
+                Type = IoListLogic.FindColumn(headers, "input type", "output type"),
             };
 
             var missing = new List<string>();
@@ -464,9 +474,10 @@ namespace ExcelPowerTools.Experimental
 
         // ---- CSV file reading (headless, via Core) ----------------------------------------------------
 
-        private static int LoadCsvMnemonics(string path, Dictionary<string, List<string>> mnemonics, out bool dirUnknown)
+        private static int LoadCsvMnemonics(string path, Dictionary<string, List<string>> mnemonics, out bool dirUnknown, out int virtualSkipped)
         {
             dirUnknown = false;
+            virtualSkipped = 0;
             try
             {
                 var doc = CsvFile.Load(File.ReadAllBytes(path));
@@ -482,6 +493,7 @@ namespace ExcelPowerTools.Experimental
                 int iOff = IoListLogic.FindColumn(headers, "offset");
                 int iBit = IoListLogic.FindColumn(headers, "bit");
                 int iBoard = IoListLogic.FindColumn(headers, "board number", "board");
+                int iType = IoListLogic.FindColumn(headers, "input type", "output type");
                 if (iName < 0 || iNode < 0 || iOff < 0 || iBit < 0 || iBoard < 0) return -1;
 
                 char dir = IoListLogic.DirectionFromName(Path.GetFileName(path));
@@ -492,6 +504,11 @@ namespace ExcelPowerTools.Experimental
                 {
                     string[] f = rows[r];
                     if (CsvDetect.IsCommentFields(f, "#")) continue;   // '#' rows are disabled signals — not pulled
+                    if (iType >= 0 && f.Length > iType && IoListLogic.IsVirtualType(f[iType]))
+                    {
+                        virtualSkipped++;   // types 5/6: virtual signals — not hardware I/O
+                        continue;
+                    }
                     if (f.Length <= iName || f.Length <= iNode || f.Length <= iOff || f.Length <= iBit || f.Length <= iBoard)
                         continue;
 
