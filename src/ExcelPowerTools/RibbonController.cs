@@ -57,6 +57,16 @@ namespace ExcelPowerTools
                   onAction='OnToggleIntercept' getPressed='GetInterceptPressed'
                   screentip='When Excel opens a .csv natively (double-click, File Open), re-route it through the safe CSV pipeline'/>
         </group>
+        <group id='ptData' label='Data'>
+          <button id='ptStats' label='Column Stats' size='large' imageMso='AutoSum' onAction='OnColumnStats'
+                  screentip='Live profile of the active cell&apos;s column: counts, distinct, numeric range, top values'/>
+          <button id='ptSortAsc' label='Sort A-Z (nat)' imageMso='SortAscendingExcel' onAction='OnSortAsc'
+                  screentip='Stable natural sort of the data block by the active column (DI2 before DI10). Undo restores the original order.'/>
+          <button id='ptSortDesc' label='Sort Z-A (nat)' imageMso='SortDescendingExcel' onAction='OnSortDesc'
+                  screentip='Stable natural sort, descending'/>
+          <button id='ptDedup' label='Dedup by key' imageMso='RemoveDuplicates' onAction='OnDedup'
+                  screentip='Remove duplicate rows keyed on the selected column(s), keeping the first occurrence. Undoable.'/>
+        </group>
         <group id='ptWorkbook' label='Workbook'>
           <button id='ptSplitWb' label='Split into files...' imageMso='CreateReportFromWizard'
                   onAction='OnSplitWorkbook'
@@ -87,6 +97,10 @@ namespace ExcelPowerTools
         public void OnUndoPt(IRibbonControl control) => UndoCommands.UndoLast();
         public void OnRedoPt(IRibbonControl control) => UndoCommands.RedoLast();
         public void OnTimeline(IRibbonControl control) => UndoCommands.ShowTimeline();
+        public void OnColumnStats(IRibbonControl control) => DataCommands.ShowColumnStats();
+        public void OnSortAsc(IRibbonControl control) => DataCommands.SortAscending();
+        public void OnSortDesc(IRibbonControl control) => DataCommands.SortDescending();
+        public void OnDedup(IRibbonControl control) => DataCommands.DedupRows();
         public void OnToggleTrackEdits(IRibbonControl control, bool pressed) => Interop.ManualEditTracker.SetEnabled(pressed);
         public bool GetTrackEditsPressed(IRibbonControl control) => Interop.ManualEditTracker.Enabled;
         public void OnOpenCsv(IRibbonControl control) => CsvCommands.OpenCsv();

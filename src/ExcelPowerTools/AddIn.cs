@@ -23,6 +23,10 @@ namespace ExcelPowerTools
             _app.SheetChange += Interop.ManualEditTracker.OnSheetChange;
             _app.SheetActivate += Interop.ManualEditTracker.OnSheetActivate;
 
+            // Selection broadcast for live panels (Column Stats).
+            _app.SheetSelectionChange += OnSelectionChangedHub;
+            _app.SheetActivate += OnSheetActivateHub;
+
             // Show a readable message instead of a bare #VALUE! if a UDF throws.
             ExcelIntegration.RegisterUnhandledExceptionHandler(
                 ex => "!ERR: " + ((ex as System.Exception)?.Message ?? ex?.ToString()));
@@ -35,7 +39,12 @@ namespace ExcelPowerTools
             _app.SheetSelectionChange -= Interop.ManualEditTracker.OnSelectionChange;
             _app.SheetChange -= Interop.ManualEditTracker.OnSheetChange;
             _app.SheetActivate -= Interop.ManualEditTracker.OnSheetActivate;
+            _app.SheetSelectionChange -= OnSelectionChangedHub;
+            _app.SheetActivate -= OnSheetActivateHub;
             _app = null;
         }
+
+        private static void OnSelectionChangedHub(object sh, Excel.Range target) => Interop.SelectionEvents.Raise();
+        private static void OnSheetActivateHub(object sh) => Interop.SelectionEvents.Raise();
     }
 }
