@@ -72,6 +72,14 @@ namespace ExcelPowerTools
                   onAction='OnSplitWorkbook'
                   screentip='Split this workbook into several files of N sheets each'/>
         </group>
+        <group id='ptIoListX' label='IO List [exp]'>
+          <button id='ptXAddr' label='Build //Address' imageMso='TableColumnsInsertLeft' onAction='OnXBuildAddress'
+                  screentip='[experimental] Add the //Address helper column (I|O.node.offset.bit) to a plant Inputs/Outputs CSV. Helper columns are never saved into the CSV.'/>
+          <button id='ptXPull' label='Get IO-list data' imageMso='PasteValues' onAction='OnXPullIoData'
+                  screentip='[experimental] Fill //Mnemonic, //ID, //Description... from the IO-list workbook, matched on node.offset.card.bit (card = BOARD NUMBER)'/>
+          <button id='ptXPullMn' label='Get mnemonics' imageMso='Copy' onAction='OnXPullMnemonics'
+                  screentip='[experimental] On an IO-list sheet: fill //Address + //Mnemonic from the plant CSVs (multiple names joined with /)'/>
+        </group>
         <group id='ptFramework' label='Framework'>
           <button id='ptOpenVs' label='Open in VS' size='large' imageMso='ViewCode'
                   onAction='OnOpenInVs'
@@ -101,6 +109,11 @@ namespace ExcelPowerTools
         public void OnSortAsc(IRibbonControl control) => DataCommands.SortAscending();
         public void OnSortDesc(IRibbonControl control) => DataCommands.SortDescending();
         public void OnDedup(IRibbonControl control) => DataCommands.DedupRows();
+
+        // Experimental IO-list bridge
+        public void OnXBuildAddress(IRibbonControl control) => Experimental.IoListCommands.BuildAddressColumn();
+        public void OnXPullIoData(IRibbonControl control) => Experimental.IoListCommands.PullFromIoList();
+        public void OnXPullMnemonics(IRibbonControl control) => Experimental.IoListCommands.PullMnemonicsIntoIoList();
         public void OnToggleTrackEdits(IRibbonControl control, bool pressed) => Interop.ManualEditTracker.SetEnabled(pressed);
         public bool GetTrackEditsPressed(IRibbonControl control) => Interop.ManualEditTracker.Enabled;
         public void OnOpenCsv(IRibbonControl control) => CsvCommands.OpenCsv();

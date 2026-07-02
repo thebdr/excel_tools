@@ -43,7 +43,8 @@ namespace ExcelPowerTools.Commands
         /// error values (#REF!) and formatted numbers survive; doubles are stringified invariant/integer-aware
         /// (no locale separator, no scientific notation). Every row — comment rows included — is emitted at
         /// <paramref name="forcedWidth"/> (or the widest non-empty extent), matching how Excel itself pads
-        /// short rows when saving a CSV.
+        /// short rows when saving a CSV. Columns whose ROW-1 cell starts with "//" are HELPER columns
+        /// (view-only lookups etc.) and are never part of the saved file.
         /// </summary>
         public static List<CsvRecord> ReadRecords(dynamic sheet, int forcedWidth)
         {
@@ -70,16 +71,26 @@ namespace ExcelPowerTools.Commands
                 rows = 1; cols = 1; rBase = 0; cBase = 0;
             }
 
+            // "//" helper columns are excluded from the file entirely.
+            var kept = new List<int>(cols);
+            for (int c = 0; c < cols; c++)
+            {
+                if (grid[rBase, cBase + c] is string marker
+                    && marker.StartsWith("//", StringComparison.Ordinal)) continue;
+                kept.Add(c);
+            }
+            if (kept.Count == 0) kept.Add(0);
+
             // Never below the widest non-empty extent, so user-added columns are kept, not truncated.
-            int width = Math.Max(forcedWidth, EffectiveWidth(grid, rows, cols, rBase, cBase));
+            int width = Math.Max(forcedWidth, EffectiveWidth(grid, rows, kept, rBase, cBase));
             if (width < 1) width = 1;
 
             for (int r = 0; r < rows; r++)
             {
                 int sheetRow = r + 1;
-                var row = new string[cols];
-                for (int c = 0; c < cols; c++)
-                    row[c] = CellText(grid[rBase + r, cBase + c], sheet, sheetRow, c + 1);
+                var row = new string[kept.Count];
+                for (int j = 0; j < kept.Count; j++)
+                    row[j] = CellText(grid[rBase + r, cBase + kept[j]], sheet, sheetRow, kept[j] + 1);
 
                 records.Add(CsvRecord.Data(Resize(row, width)));
             }
@@ -96,14 +107,14 @@ namespace ExcelPowerTools.Commands
             return outRow;
         }
 
-        private static int EffectiveWidth(object[,] grid, int rows, int cols, int rBase, int cBase)
+        private static int EffectiveWidth(object[,] grid, int rows, List<int> kept, int rBase, int cBase)
         {
             int width = 1;
             for (int r = 0; r < rows; r++)
             {
                 int lastNonEmpty = 0;
-                for (int c = 0; c < cols; c++)
-                    if (!IsEmpty(grid[rBase + r, cBase + c])) lastNonEmpty = c + 1;
+                for (int j = 0; j < kept.Count; j++)
+                    if (!IsEmpty(grid[rBase + r, cBase + kept[j]])) lastNonEmpty = j + 1;
                 if (lastNonEmpty > width) width = lastNonEmpty;
             }
             return width;
