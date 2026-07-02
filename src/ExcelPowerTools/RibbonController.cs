@@ -32,6 +32,10 @@ namespace ExcelPowerTools
                   screentip='Regex find &amp; replace with capture groups ($1) and a before/after preview — scoped to the selection or the whole sheet'/>
           <button id='ptSmartFill' label='Smart Fill Down' imageMso='FillDown' onAction='OnSmartFill'
                   screentip='Fill down incrementing the trailing number (Z07→Z08…, IP last octet); two seeds set the step; skips hidden rows. Shortcut: Ctrl+Shift+D'/>
+          <button id='ptUndo' label='Undo PT' imageMso='Undo' onAction='OnUndoPt'
+                  screentip='Undo the last Power Tools operation (20 deep). Plain Ctrl+Z also works right after an operation. Shortcut: Ctrl+Alt+Z'/>
+          <button id='ptRedo' label='Redo PT' imageMso='Redo' onAction='OnRedoPt'
+                  screentip='Redo an undone Power Tools operation. Shortcut: Ctrl+Alt+Y'/>
         </group>
         <group id='ptCsv' label='CSV'>
           <button id='ptCsvOpen' label='Open CSV/TXT' size='large' imageMso='FileOpen' onAction='OnOpenCsv'
@@ -75,6 +79,8 @@ namespace ExcelPowerTools
         public void OnKeepValues(IRibbonControl control) => SelectionCommands.KeepValuesOnly();
         public void OnRegexReplace(IRibbonControl control) => RegexReplaceCommands.ShowRegexReplace();
         public void OnSmartFill(IRibbonControl control) => FillCommands.SmartFillDown();
+        public void OnUndoPt(IRibbonControl control) => UndoCommands.UndoLast();
+        public void OnRedoPt(IRibbonControl control) => UndoCommands.RedoLast();
         public void OnOpenCsv(IRibbonControl control) => CsvCommands.OpenCsv();
         public void OnSaveCsv(IRibbonControl control) => CsvCommands.SaveCsv();
         public void OnExportCsv(IRibbonControl control) => CsvCommands.ExportSheetAsCsv();

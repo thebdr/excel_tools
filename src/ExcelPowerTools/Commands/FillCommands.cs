@@ -23,15 +23,17 @@ namespace ExcelPowerTools.Commands
             dynamic areas;
             try { areas = app.Selection.Areas; } catch { return; }   // not a cell range
 
+            var undo = UndoManager.NewEntry("Smart Fill Down", sheet);
             using (new ExcelStateGuard(manualCalculation: true))
             {
                 int areaCount = (int)areas.Count;
                 for (int a = 1; a <= areaCount; a++)
-                    FillArea(sheet, areas(a));
+                    FillArea(sheet, areas(a), undo);
             }
+            UndoManager.Push(undo);
         }
 
-        private static void FillArea(dynamic sheet, dynamic area)
+        private static void FillArea(dynamic sheet, dynamic area, UndoEntry undo)
         {
             int r0 = (int)area.Row;
             int c0 = (int)area.Column;
@@ -62,7 +64,11 @@ namespace ExcelPowerTools.Commands
 
                 int start = seq.TwoSeedsConsumed ? 2 : 1;
                 for (int k = start; k < visible.Count; k++)
-                    sheet.Cells(r0 + visible[k], sheetCol).Value = seq.ValueAt(k);
+                {
+                    int sheetRow = r0 + visible[k];
+                    UndoManager.CaptureCell(undo, sheet, sheetRow, sheetCol);
+                    sheet.Cells(sheetRow, sheetCol).Value = seq.ValueAt(k);
+                }
             }
         }
     }

@@ -57,6 +57,7 @@ namespace ExcelPowerTools.Commands
             }
 
             int changed = 0, outOfRange = 0, notNumeric = 0;
+            var undo = UndoManager.NewEntry("Change Field", app.ActiveSheet);
 
             using (new ExcelStateGuard())
             {
@@ -85,6 +86,7 @@ namespace ExcelPowerTools.Commands
                             switch (result.Status)
                             {
                                 case FieldChangeStatus.Changed:
+                                    UndoManager.CaptureCell(undo, app.ActiveSheet, (int)cell.Row, (int)cell.Column);
                                     cell.Value = result.NewValue;
                                     ApplyColors(cell, fontColor, interiorColor);
                                     changed++;
@@ -100,6 +102,8 @@ namespace ExcelPowerTools.Commands
                     }
                 }
             }
+
+            UndoManager.Push(undo);
 
             if (outOfRange > 0 || notNumeric > 0)
             {

@@ -112,11 +112,16 @@ namespace ExcelPowerTools.Commands
             dynamic sheet = app.ActiveSheet;
             if (sheet == null) return;
 
+            var undo = UndoManager.NewEntry("Regex Replace", sheet);
             using (new ExcelStateGuard(manualCalculation: true))
             {
                 foreach (var ch in changes)
+                {
+                    UndoManager.CaptureCell(undo, sheet, ch.Row, ch.Column);
                     sheet.Cells(ch.Row, ch.Column).Value = ch.After;
+                }
             }
+            UndoManager.Push(undo);
         }
 
         // ---- settings ---------------------------------------------------------------------------

@@ -37,15 +37,20 @@ namespace ExcelPowerTools.Commands
                     catch { return; }   // no visible cells
                 }
 
+                var undo = UndoManager.NewEntry("Keep Values Only", app.ActiveSheet);
+
                 dynamic areas = target.Areas;
                 int areaCount = (int)areas.Count;
                 for (int a = 1; a <= areaCount; a++)
                 {
                     dynamic area = areas(a);
+                    UndoManager.CaptureBlock(undo, area);   // the formulas, before they're flattened
                     // Reading Value2 returns the computed values; writing them back drops the formulas.
                     object values = area.Value2;
                     area.Value2 = values;
                 }
+
+                UndoManager.Push(undo);
             }
         }
     }
