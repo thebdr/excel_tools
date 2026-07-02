@@ -28,6 +28,9 @@ namespace ExcelPowerTools.UI
         private readonly ListView _list = new ListView();
         private readonly Label _status = new Label { AutoSize = false };
 
+        private readonly Button _helpBtn = new Button { Text = "?", TabStop = false };
+        private Form _helpForm;
+
         private List<RegexCellChange> _pending;
 
         /// <summary>(spec, selectionScope, visibleOnly) → the changes that would be made.</summary>
@@ -61,7 +64,12 @@ namespace ExcelPowerTools.UI
             int y = 14;
 
             AddLabel("Find:", labelX, y);
-            Place(_find, inputX, y, ClientSize.Width - inputX - 12, anchorRight: true);
+            Place(_find, inputX, y, ClientSize.Width - inputX - 46, anchorRight: true);
+            _helpBtn.Location = new Point(ClientSize.Width - 40, y);
+            _helpBtn.Size = new Size(28, 24);
+            _helpBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _helpBtn.Click += (_, __) => ShowHelp();
+            Controls.Add(_helpBtn);
             y += 30;
 
             AddLabel("Replace:", labelX, y);
@@ -208,6 +216,90 @@ namespace ExcelPowerTools.UI
             InvalidatePreview();
             _list.Items.Clear();
         }
+
+        /// <summary>Opens (or refocuses) the floating regex cheat-sheet. Non-modal, closes with this dialog.</summary>
+        private void ShowHelp()
+        {
+            if (_helpForm != null && !_helpForm.IsDisposed) { _helpForm.Activate(); return; }
+
+            var box = new TextBox
+            {
+                Multiline = true,
+                ReadOnly = true,
+                WordWrap = false,
+                ScrollBars = ScrollBars.Both,
+                Dock = DockStyle.Fill,
+                Font = new Font("Consolas", 9f),
+                Text = HelpText.Replace("\n", "\r\n"),
+                TabStop = false,
+            };
+
+            _helpForm = new Form
+            {
+                Text = "Regex quick reference",
+                FormBorderStyle = FormBorderStyle.SizableToolWindow,
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(Right + 8, Top),
+                ClientSize = new Size(520, 560),
+                ShowInTaskbar = false,
+            };
+            _helpForm.Controls.Add(box);
+            _helpForm.Shown += (_, __) => { box.SelectionStart = 0; box.SelectionLength = 0; };
+            _helpForm.Show(this);   // owned: stays above this dialog, closes with it
+        }
+
+        private const string HelpText = @"MATCH
+  .        any character
+  \d  \D   digit / non-digit
+  \w  \W   word char (letter, digit, _) / non
+  \s  \S   whitespace / non-whitespace
+  [abc]    one of a, b, c      [^abc]  none of them
+  [a-z0-9] character range
+  \.  \\   literal . and \
+           (escape these when meant literally: . $ ^ { [ ( | ) * + ? \ )
+
+REPEAT
+  *        0 or more            +      1 or more
+  ?        0 or 1
+  {3}      exactly 3            {2,5}  2 to 5      {2,}  2 or more
+  *?  +?   lazy versions (shortest match instead of longest)
+
+POSITION
+  ^   $    start / end of the cell text
+  \b       word boundary   (Z0\d\b matches Z01 but not Z012)
+
+GROUPS & REPLACEMENT
+  (abc)      capture group             -> $1, $2, ...
+  (?<name>x) named group               -> ${name}
+  (?:abc)    group without capturing
+  a|b        alternation: a or b
+  $0         the whole match           (wrap it: [$0])
+  ${1}       use braces when a digit follows: $199 is group 199!
+  $$         a literal $ in the replacement
+
+REPLACE ONLY PART OF THE MATCH
+  Keep pieces with groups:
+    find   (AUTO\d+_Z)\d+        replace   ${1}99
+    find   AUTO(\d+)(_Z\d+)      replace   MAN$1$2
+  Touch only a slice with lookarounds (context stays outside the match):
+    (?<=X)   preceded by X       (?<!X)   not preceded by X
+    (?=X)    followed by X       (?!X)    not followed by X
+    find   (?<=192\.168\.0\.)\d+     replace   50
+    find   \d+(?=;ERR)               replace   0
+  .NET allows variable-length lookbehind:  (?<=AUTO\d+_Z)
+
+EXAMPLES
+  swap two numbers        (\d+)\.(\d+)        ->  $2.$1
+  pad 1 digit to 2        \b(\d)\b            ->  0$1
+  trim trailing spaces    \s+$                ->  (empty)
+  last IP octet           (?<=(\d+\.){3})\d+  ->  99
+  digits after prefix     (?<=AUTO1_Z)\d+     ->  99
+  quote whole cell        ^.+$                ->  ""$0""
+
+TOOL NOTES
+  'Plain text'  disables all of the above (literal search & replace)
+  'Whole cell'  wraps your pattern as ^(?:...)$ - group numbers unchanged
+  empty cells never match; replacements land as text on CSV sheets";
 
         /// <summary>R1C1 → "B5"-style reference for the preview list.</summary>
         private static string CellRef(int row, int col)
