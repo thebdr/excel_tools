@@ -12,28 +12,41 @@ namespace ExcelPowerTools.Interop
         public string[,] Formulas;   // [rows, cols], 0-based; "" = empty cell
     }
 
-    /// <summary>One undoable Power-Tools operation: which cells it touched and what they held before.</summary>
+    /// <summary>One timeline step: which cells an operation touched and what they held before it.</summary>
     internal sealed class UndoEntry
     {
         public string Description;
         public string WorkbookName;
         public string SheetName;
+        public bool IsManualEdit;
+        public DateTime Timestamp = DateTime.Now;
         public List<UndoBlock> Blocks = new List<UndoBlock>();
         public int CellCount;
     }
 
     /// <summary>
-    /// Undo for add-in operations — the thing VBA never gave us. Mutating commands snapshot the cells
-    /// they change (as .Formula strings, so real formulas survive) and push here. Application.OnUndo is
-    /// registered after each push, so NATIVE Ctrl+Z undoes the operation immediately after it runs (and
-    /// then toggles to Redo). Older operations stay reachable via PT_UndoLast/PT_RedoLast (Ctrl+Alt+Z/Y),
-    /// up to 20 deep. Cell contents are restored; formatting changes are not tracked.
+    /// The unified undo timeline — the thing VBA never gave us. Power-Tools commands snapshot the cells
+    /// they change; the ManualEditTracker feeds the user's own edits into the same stack. Entries store
+    /// .Formula strings, so real formulas survive. Application.OnUndo is registered after each PT
+    /// operation, so NATIVE Ctrl+Z undoes it immediately afterwards (then toggles to Redo). The full
+    /// timeline (50 deep) is reachable via PT_UndoLast/PT_RedoLast (Ctrl+Alt+Z/Y) and the Timeline window.
+    /// Cell contents are restored; formatting is not tracked.
     /// </summary>
     internal static class UndoManager
     {
-        private const int MaxDepth = 20;
+        public const int MaxDepth = 50;
+
         private static readonly List<UndoEntry> _undo = new List<UndoEntry>();
         private static readonly List<UndoEntry> _redo = new List<UndoEntry>();
+
+        /// <summary>Raised whenever the stacks change (push, undo, redo) — the Timeline window listens.</summary>
+        public static event Action Changed;
+
+        /// <summary>Oldest → newest. The entry at the END is the next to be undone.</summary>
+        public static IReadOnlyList<UndoEntry> UndoEntries => _undo;
+
+        /// <summary>Oldest → newest. The entry at the END is the next to be redone.</summary>
+        public static IReadOnlyList<UndoEntry> RedoEntries => _redo;
 
         // ---- capture ------------------------------------------------------------------------------
 
@@ -82,48 +95,81 @@ namespace ExcelPowerTools.Interop
             entry.CellCount += rows * cols;
         }
 
-        /// <summary>Publishes a completed operation: makes native Ctrl+Z undo it (one-shot) and stacks it.</summary>
+        /// <summary>Publishes a PT operation: stacks it and makes native Ctrl+Z undo it (one-shot).</summary>
         public static void Push(UndoEntry entry)
         {
             if (entry == null || entry.CellCount == 0) return;
 
-            _undo.Add(entry);
-            if (_undo.Count > MaxDepth) _undo.RemoveAt(0);
+            AddToUndo(entry);
             _redo.Clear();
-
             RegisterOnUndo("Undo " + entry.Description + " (Power Tools)", "PT_UndoLast");
+            RaiseChanged();
+        }
+
+        /// <summary>Publishes a tracked MANUAL edit: stacked, but Excel's own Ctrl+Z keeps handling it natively.</summary>
+        public static void PushManual(UndoEntry entry)
+        {
+            if (entry == null || entry.CellCount == 0) return;
+
+            AddToUndo(entry);
+            _redo.Clear();
+            RaiseChanged();
         }
 
         // ---- undo / redo --------------------------------------------------------------------------
 
-        public static void UndoLast()
+        public static void UndoLast() => UndoSteps(1);
+        public static void RedoLast() => RedoSteps(1);
+
+        /// <summary>Walks the timeline back <paramref name="count"/> steps.</summary>
+        public static void UndoSteps(int count)
         {
             if (_undo.Count == 0) { Dialogs.Info("Nothing to undo."); return; }
 
-            UndoEntry e = _undo[_undo.Count - 1];
-            _undo.RemoveAt(_undo.Count - 1);
+            int done = 0;
+            string lastDesc = null;
+            while (done < count && _undo.Count > 0)
+            {
+                UndoEntry e = _undo[_undo.Count - 1];
+                _undo.RemoveAt(_undo.Count - 1);
 
-            UndoEntry inverse = SwapApply(e);
-            if (inverse == null) return;   // sheet gone — step dropped
+                UndoEntry inverse = SwapApply(e);
+                if (inverse == null) continue;   // sheet gone — step dropped
 
-            _redo.Add(inverse);
-            if (_redo.Count > MaxDepth) _redo.RemoveAt(0);
-            RegisterOnUndo("Redo " + e.Description + " (Power Tools)", "PT_RedoLast");
+                _redo.Add(inverse);
+                if (_redo.Count > MaxDepth) _redo.RemoveAt(0);
+                lastDesc = e.Description;
+                done++;
+            }
+
+            if (lastDesc != null)
+                RegisterOnUndo("Redo " + lastDesc + " (Power Tools)", "PT_RedoLast");
+            RaiseChanged();
         }
 
-        public static void RedoLast()
+        /// <summary>Replays <paramref name="count"/> undone steps.</summary>
+        public static void RedoSteps(int count)
         {
             if (_redo.Count == 0) { Dialogs.Info("Nothing to redo."); return; }
 
-            UndoEntry e = _redo[_redo.Count - 1];
-            _redo.RemoveAt(_redo.Count - 1);
+            int done = 0;
+            string lastDesc = null;
+            while (done < count && _redo.Count > 0)
+            {
+                UndoEntry e = _redo[_redo.Count - 1];
+                _redo.RemoveAt(_redo.Count - 1);
 
-            UndoEntry inverse = SwapApply(e);
-            if (inverse == null) return;
+                UndoEntry inverse = SwapApply(e);
+                if (inverse == null) continue;
 
-            _undo.Add(inverse);
-            if (_undo.Count > MaxDepth) _undo.RemoveAt(0);
-            RegisterOnUndo("Undo " + e.Description + " (Power Tools)", "PT_UndoLast");
+                AddToUndo(inverse);
+                lastDesc = e.Description;
+                done++;
+            }
+
+            if (lastDesc != null)
+                RegisterOnUndo("Undo " + lastDesc + " (Power Tools)", "PT_UndoLast");
+            RaiseChanged();
         }
 
         /// <summary>Captures the current state of the entry's cells (for the inverse op), then restores the entry.</summary>
@@ -143,6 +189,7 @@ namespace ExcelPowerTools.Interop
                 Description = e.Description,
                 WorkbookName = e.WorkbookName,
                 SheetName = e.SheetName,
+                IsManualEdit = e.IsManualEdit,
             };
 
             using (new ExcelStateGuard(manualCalculation: true))
@@ -152,7 +199,7 @@ namespace ExcelPowerTools.Interop
                     int rows = b.Formulas.GetLength(0), cols = b.Formulas.GetLength(1);
                     dynamic range = sheet.Range(sheet.Cells(b.Row, b.Col), sheet.Cells(b.Row + rows - 1, b.Col + cols - 1));
 
-                    CaptureBlock(inverse, range);   // current content, so the operation can be re-done
+                    CaptureBlock(inverse, range);   // current content, so the step can be re-done
 
                     if (rows == 1 && cols == 1)
                     {
@@ -174,6 +221,17 @@ namespace ExcelPowerTools.Interop
         }
 
         // ---- plumbing -----------------------------------------------------------------------------
+
+        private static void AddToUndo(UndoEntry entry)
+        {
+            _undo.Add(entry);
+            if (_undo.Count > MaxDepth) _undo.RemoveAt(0);
+        }
+
+        private static void RaiseChanged()
+        {
+            try { Changed?.Invoke(); } catch { }
+        }
 
         private static void SetCell(dynamic cell, string formula)
         {

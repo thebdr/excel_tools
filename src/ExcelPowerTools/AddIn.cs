@@ -18,6 +18,11 @@ namespace ExcelPowerTools
             _app = (Excel.Application)ExcelDnaUtil.Application;
             _app.WorkbookOpen += CsvCommands.OnWorkbookOpen;
 
+            // Manual-edit tracking for the unified undo timeline.
+            _app.SheetSelectionChange += Interop.ManualEditTracker.OnSelectionChange;
+            _app.SheetChange += Interop.ManualEditTracker.OnSheetChange;
+            _app.SheetActivate += Interop.ManualEditTracker.OnSheetActivate;
+
             // Show a readable message instead of a bare #VALUE! if a UDF throws.
             ExcelIntegration.RegisterUnhandledExceptionHandler(
                 ex => "!ERR: " + ((ex as System.Exception)?.Message ?? ex?.ToString()));
@@ -27,6 +32,9 @@ namespace ExcelPowerTools
         {
             if (_app == null) return;
             _app.WorkbookOpen -= CsvCommands.OnWorkbookOpen;
+            _app.SheetSelectionChange -= Interop.ManualEditTracker.OnSelectionChange;
+            _app.SheetChange -= Interop.ManualEditTracker.OnSheetChange;
+            _app.SheetActivate -= Interop.ManualEditTracker.OnSheetActivate;
             _app = null;
         }
     }

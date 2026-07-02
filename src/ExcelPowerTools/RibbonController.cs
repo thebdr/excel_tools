@@ -33,9 +33,14 @@ namespace ExcelPowerTools
           <button id='ptSmartFill' label='Smart Fill Down' imageMso='FillDown' onAction='OnSmartFill'
                   screentip='Fill down incrementing the trailing number (Z07→Z08…, IP last octet); two seeds set the step; skips hidden rows. Shortcut: Ctrl+Shift+D'/>
           <button id='ptUndo' label='Undo PT' imageMso='Undo' onAction='OnUndoPt'
-                  screentip='Undo the last Power Tools operation (20 deep). Plain Ctrl+Z also works right after an operation. Shortcut: Ctrl+Alt+Z'/>
+                  screentip='Undo the last timeline step (50 deep). Plain Ctrl+Z also works right after a PT operation. Shortcut: Ctrl+Alt+Z'/>
           <button id='ptRedo' label='Redo PT' imageMso='Redo' onAction='OnRedoPt'
-                  screentip='Redo an undone Power Tools operation. Shortcut: Ctrl+Alt+Y'/>
+                  screentip='Redo an undone timeline step. Shortcut: Ctrl+Alt+Y'/>
+          <button id='ptTimeline' label='Timeline' imageMso='History' onAction='OnTimeline'
+                  screentip='Show the undo timeline (PT operations + tracked manual edits) and jump to any step'/>
+          <toggleButton id='ptTrackEdits' label='Track edits' imageMso='TrackChanges'
+                  onAction='OnToggleTrackEdits' getPressed='GetTrackEditsPressed'
+                  screentip='Feed your manual cell edits into the undo timeline (typing, delete, paste-over-selection). Formatting and structural changes are not tracked.'/>
         </group>
         <group id='ptCsv' label='CSV'>
           <button id='ptCsvOpen' label='Open CSV/TXT' size='large' imageMso='FileOpen' onAction='OnOpenCsv'
@@ -81,6 +86,9 @@ namespace ExcelPowerTools
         public void OnSmartFill(IRibbonControl control) => FillCommands.SmartFillDown();
         public void OnUndoPt(IRibbonControl control) => UndoCommands.UndoLast();
         public void OnRedoPt(IRibbonControl control) => UndoCommands.RedoLast();
+        public void OnTimeline(IRibbonControl control) => UndoCommands.ShowTimeline();
+        public void OnToggleTrackEdits(IRibbonControl control, bool pressed) => Interop.ManualEditTracker.SetEnabled(pressed);
+        public bool GetTrackEditsPressed(IRibbonControl control) => Interop.ManualEditTracker.Enabled;
         public void OnOpenCsv(IRibbonControl control) => CsvCommands.OpenCsv();
         public void OnSaveCsv(IRibbonControl control) => CsvCommands.SaveCsv();
         public void OnExportCsv(IRibbonControl control) => CsvCommands.ExportSheetAsCsv();

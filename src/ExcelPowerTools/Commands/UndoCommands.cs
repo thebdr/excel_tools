@@ -14,5 +14,8 @@ namespace ExcelPowerTools.Commands
 
         [ExcelCommand(Name = "PT_RedoLast", MenuName = "Power Tools", MenuText = "Redo Power Tools operation", ShortCut = "^%y")]
         public static void RedoLast() => UndoManager.RedoLast();
+
+        [ExcelCommand(Name = "PT_ShowTimeline", MenuName = "Power Tools", MenuText = "Timeline...")]
+        public static void ShowTimeline() => UI.TimelineForm.ShowTimeline();
     }
 }
