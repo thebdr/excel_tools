@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -47,15 +48,24 @@ namespace ExcelPowerTools.Core.Csv
             {
                 string[] a = original[r].Fields;
                 string[] b = current[r].Fields;
-                int width = a.Length > b.Length ? a.Length : b.Length;
-                for (int c = 0; c < width; c++)
+                int commonWidth = a.Length < b.Length ? a.Length : b.Length;
+                for (int c = 0; c < commonWidth; c++)
                 {
-                    string va = c < a.Length ? (a[c] ?? "") : "";
-                    string vb = c < b.Length ? (b[c] ?? "") : "";
+                    string va = a[c] ?? "";
+                    string vb = b[c] ?? "";
                     if (va != vb)
                     {
                         s.ChangedCells++;
                         if (s.FirstChangeRow < 0) { s.FirstChangeRow = r + 1; s.FirstChangeColumn = c + 1; }
+                    }
+                }
+                if (a.Length != b.Length)
+                {
+                    s.ChangedCells += Math.Abs(a.Length - b.Length);
+                    if (s.FirstChangeRow < 0)
+                    {
+                        s.FirstChangeRow = r + 1;
+                        s.FirstChangeColumn = commonWidth + 1;
                     }
                 }
             }
@@ -82,11 +92,13 @@ namespace ExcelPowerTools.Core.Csv
             {
                 string[] a = intended[r].Fields;
                 string[] b = reparsed.Records[r].Fields;
-                int width = a.Length > b.Length ? a.Length : b.Length;
-                for (int c = 0; c < width; c++)
+                if (a.Length != b.Length)
+                    return $"row {r + 1}: field count after re-parse is {b.Length}, expected {a.Length}";
+
+                for (int c = 0; c < a.Length; c++)
                 {
-                    string va = c < a.Length ? (a[c] ?? "") : "";
-                    string vb = c < b.Length ? (b[c] ?? "") : "";
+                    string va = a[c] ?? "";
+                    string vb = b[c] ?? "";
                     if (va != vb)
                         return $"row {r + 1}, column {c + 1}: value would change from \"{va}\" to \"{vb}\"";
                 }

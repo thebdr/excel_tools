@@ -42,6 +42,8 @@ namespace ExcelPowerTools.Commands
             dynamic sheet = app.ActiveSheet;
             if (sheet == null) return changes;
 
+            var helperColumns = CsvSheet.HelperColumns(sheet, (int)RangeHelpers.LastColumn(sheet));
+
             var regex = RegexReplacer.Build(spec);
             string replacement = RegexReplacer.EffectiveReplacement(spec);
 
@@ -86,6 +88,7 @@ namespace ExcelPowerTools.Commands
                     for (int c = 0; c < cols; c++)
                     {
                         int sheetCol = c0 + c;
+                        if (helperColumns.Contains(sheetCol)) continue;
                         long key = (long)sheetRow << 20 | (uint)sheetCol;
                         if (!seen.Add(key)) continue;
 

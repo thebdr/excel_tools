@@ -20,6 +20,10 @@ namespace ExcelPowerTools.Interop
         private static int _suppress;
         private static bool? _enabled;
         private static UndoEntry _shadow;
+        private static UndoEntry _currentChange;
+
+        /// <summary>The entry pushed by the current SheetChange event, available to later event subscribers.</summary>
+        internal static UndoEntry CurrentChange => _currentChange;
 
         // ---- enable/disable (ribbon toggle, persisted) --------------------------------------------
 
@@ -67,9 +71,17 @@ namespace ExcelPowerTools.Interop
             catch { _shadow = null; }
         }
 
+        /// <summary>
+        /// Optional predicate excluding specific sheets from manual-edit tracking. The IO Bridge
+        /// registers its workspace here: its edits are queued actions with their own lifecycle, and a
+        /// "Manual edit" timeline entry alongside would desynchronize undo from the queue.
+        /// </summary>
+        internal static Func<object, bool> SheetExclusion;
+
         public static void OnSheetChange(object sh, Excel.Range target)
         {
-            if (!Enabled || _suppress > 0) return;
+            _currentChange = null;
+            if (!Enabled || _suppress > 0 || IsExcluded(sh)) return;
 
             UndoEntry shadow = _shadow;
             try
@@ -110,6 +122,7 @@ namespace ExcelPowerTools.Interop
                 }
 
                 UndoManager.PushManual(entry);
+                _currentChange = entry;
             }
             catch { }
             finally
@@ -126,6 +139,13 @@ namespace ExcelPowerTools.Interop
         }
 
         // ---- internals -----------------------------------------------------------------------------
+
+        private static bool IsExcluded(object sheet)
+        {
+            Func<object, bool> exclusion = SheetExclusion;
+            if (exclusion == null) return false;
+            try { return exclusion(sheet); } catch { return false; }
+        }
 
         private static void Snapshot(dynamic selection)
         {

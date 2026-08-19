@@ -5,15 +5,22 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>ExcelPowerTools</RootNamespace>
     <AssemblyName>ExcelPowerTools</AssemblyName>
+    <Version>1.3.0</Version>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <FileVersion>1.3.0.0</FileVersion>
     <!-- Excel-DNA builds both 32- and 64-bit .xll hosts around this AnyCPU assembly. -->
     <PlatformTarget>AnyCPU</PlatformTarget>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <!-- Excel-DNA packs the add-in on build; keep the loose files too for debugging. -->
     <RunExcelDnaPack>true</RunExcelDnaPack>
+    <!-- net48 has no .deps.json for Excel-DNA to inspect, so name managed dependencies explicitly. -->
+    <ExcelAddInInclude>DocumentFormat.OpenXml.dll;DocumentFormat.OpenXml.Framework.dll</ExcelAddInInclude>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Core sources are linked into this assembly, so their runtime dependency must also be packed here. -->
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
     <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
     <PackageReference Include="ExcelDna.Interop" Version="15.0.1">
       <EmbedInteropTypes>true</EmbedInteropTypes>
@@ -27,6 +34,8 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
     <Reference Include="Microsoft.VisualBasic" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
 
   <!--

@@ -23,7 +23,13 @@ namespace ExcelPowerTools.Core.Csv
                 for (int f = 0; f < fields.Length; f++)
                 {
                     if (f > 0) sb.Append(format.Delimiter);
-                    AppendField(sb, fields[f], format);
+                    // A final one-field blank record with no trailing newline would otherwise serialize to
+                    // zero bytes and disappear when parsed. Quoting that field is the canonical unambiguous
+                    // representation (e.g. a\n\"\" instead of a\n).
+                    bool preserveFinalBlankRecord =
+                        r == records.Count - 1 && !format.HasTrailingNewline && fields.Length == 1 &&
+                        string.IsNullOrEmpty(fields[f]);
+                    AppendField(sb, fields[f], format, preserveFinalBlankRecord);
                 }
 
                 sb.Append(TerminatorFor(rec, format, isLast: r == records.Count - 1));
@@ -39,12 +45,13 @@ namespace ExcelPowerTools.Core.Csv
             return format.NewlineString;
         }
 
-        private static void AppendField(StringBuilder sb, string field, CsvFormat format)
+        private static void AppendField(StringBuilder sb, string field, CsvFormat format, bool forceQuote = false)
         {
             field = field ?? string.Empty;
 
             bool mustQuote =
-                format.QuotePolicy == CsvQuotePolicy.All
+                forceQuote
+                || format.QuotePolicy == CsvQuotePolicy.All
                 || field.IndexOf(format.Delimiter) >= 0
                 || field.IndexOf(format.Quote) >= 0
                 || field.IndexOf('\r') >= 0

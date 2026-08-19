@@ -54,6 +54,15 @@ namespace ExcelPowerTools.Tests.Csv
         }
 
         [Fact]
+        public void Missing_field_differs_from_an_explicit_empty_field()
+        {
+            var s = CsvDiff.Summarize(Rows(new[] { "a" }), Rows(new[] { "a", "" }));
+            Assert.True(s.HasChanges);
+            Assert.Equal(1, s.ChangedCells);
+            Assert.Equal(2, s.FirstChangeColumn);
+        }
+
+        [Fact]
         public void VerifyRoundTrip_passes_for_written_bytes()
         {
             var fmt = new CsvFormat { Delimiter = ';' };
@@ -77,6 +86,18 @@ namespace ExcelPowerTools.Tests.Csv
             string mismatch = CsvDiff.VerifyRoundTrip(bytes, fmt, doc.Records);
             Assert.NotNull(mismatch);
             Assert.Contains("row 1", mismatch);
+        }
+
+        [Fact]
+        public void VerifyRoundTrip_catches_a_lost_trailing_empty_field()
+        {
+            var fmt = new CsvFormat { Delimiter = ';', HasTrailingNewline = true };
+            byte[] missingField = new UTF8Encoding(false).GetBytes("a\r\n");
+
+            string mismatch = CsvDiff.VerifyRoundTrip(missingField, fmt, Rows(new[] { "a", "" }));
+
+            Assert.NotNull(mismatch);
+            Assert.Contains("field count", mismatch);
         }
 
         [Fact]

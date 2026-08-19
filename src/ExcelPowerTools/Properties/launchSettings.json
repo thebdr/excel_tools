@@ -3,7 +3,8 @@
     "Excel (load add-in)": {
       "commandName": "Executable",
       "executablePath": "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
-      "commandLineArgs": "\"C:\\Source\\Repos\\excel_tools\\src\\ExcelPowerTools\\bin\\Debug\\net48\\ExcelPowerTools-AddIn64.xll\""
+      "commandLineArgs": "/x \"C:\\Source\\Repos\\excel_tools\\src\\ExcelPowerTools\\bin\\Debug\\net48\\ExcelPowerTools-AddIn64.xll\"",
+      "workingDirectory": "C:\\Source\\Repos\\excel_tools\\src\\ExcelPowerTools\\bin\\Debug\\net48"
     },
     "Excel": {
       "commandName": "Executable",

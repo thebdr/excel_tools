@@ -23,10 +23,14 @@ namespace ExcelPowerTools.Interop
         private readonly object _calculation;
         private readonly bool _calcCaptured;
         // Every guarded block is a programmatic write — never a "manual edit" for the undo timeline.
-        private readonly IDisposable _trackingSuppression = ManualEditTracker.Suppress();
+        private readonly IDisposable _trackingSuppression;
 
-        public ExcelStateGuard(bool manualCalculation = false, bool suppressEvents = false)
+        public ExcelStateGuard(
+            bool manualCalculation = false,
+            bool suppressEvents = false,
+            bool suppressManualEditTracking = true)
         {
+            if (suppressManualEditTracking) _trackingSuppression = ManualEditTracker.Suppress();
             _app = ExcelDnaUtil.Application;
 
             _screenUpdating = TryGetBool(() => _app.ScreenUpdating, true);
@@ -44,7 +48,7 @@ namespace ExcelPowerTools.Interop
             TrySet(() => _app.ScreenUpdating = _screenUpdating);
             TrySet(() => _app.EnableEvents = _enableEvents);
             if (_calcCaptured) TrySet(() => _app.Calculation = _calculation);
-            _trackingSuppression.Dispose();
+            _trackingSuppression?.Dispose();
         }
 
         private static bool TryGetBool(Func<bool> getter, bool fallback)

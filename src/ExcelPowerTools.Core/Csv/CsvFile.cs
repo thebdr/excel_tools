@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 
 namespace ExcelPowerTools.Core.Csv
@@ -30,6 +31,20 @@ namespace ExcelPowerTools.Core.Csv
     public static class CsvFile
     {
         public static CsvDocument Load(byte[] bytes) => Load(bytes, null);
+
+        /// <summary>
+        /// Loads bytes with the file extension as a fallback hint. A TSV with no detectable separators
+        /// (empty or one-column) must still save as tab-delimited; CSV/TXT continue to use auto-detection.
+        /// A leading sep= directive remains authoritative.
+        /// </summary>
+        public static CsvDocument LoadForPath(byte[] bytes, string path)
+        {
+            string ext = Path.GetExtension(path ?? "");
+            CsvFormat hint = ext.Equals(".tsv", StringComparison.OrdinalIgnoreCase)
+                ? new CsvFormat { Delimiter = '\t' }
+                : null;
+            return Load(bytes, hint);
+        }
 
         public static CsvDocument Load(byte[] bytes, CsvFormat hint)
         {

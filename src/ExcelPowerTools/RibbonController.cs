@@ -1,95 +1,129 @@
+using System;
 using System.Runtime.InteropServices;
+using ExcelDna.Integration.Extensibility;
 using ExcelDna.Integration.CustomUI;
 using ExcelPowerTools.Commands;
+using ExcelPowerTools.Interop;
+using ExcelPowerTools.UI;
 
 namespace ExcelPowerTools
 {
     /// <summary>
-    /// Builds the "Power Tools" ribbon tab and routes button clicks to the command methods.
-    /// Excel-DNA discovers this class (it derives from ExcelRibbon) and loads the XML automatically.
+    /// The ribbon is deliberately a compact command strip. Less frequent tools, configuration and
+    /// experimental features live in the searchable Power Tools Hub task pane.
     /// </summary>
     [ComVisible(true)]
     public sealed class RibbonController : ExcelRibbon
     {
+#if DEBUG
+        internal const string RibbonTabLabel = "Power Tools D";
+#else
+        internal const string RibbonTabLabel = "Power Tools";
+#endif
+
+        private IRibbonUI _ribbon;
+        private bool _eventsAttached;
+
         public override string GetCustomUI(string ribbonId)
         {
             return @"
-<customUI xmlns='http://schemas.microsoft.com/office/2009/07/customui'>
+<customUI xmlns='http://schemas.microsoft.com/office/2009/07/customui'
+          onLoad='OnRibbonLoad' loadImage='LoadImage'>
   <ribbon>
     <tabs>
-      <tab id='ptTab' label='Power Tools'>
-        <group id='ptFields' label='Fields'>
-          <button id='ptChangeField' label='Change Field...' size='large'
-                  imageMso='TableColumnsInsertLeft' onAction='OnChangeField'
-                  screentip='Edit a delimited field inside each selected cell'/>
-        </group>
-        <group id='ptSelection' label='Selection'>
-          <button id='ptKeepValues' label='Keep Values Only' size='large'
-                  imageMso='PasteValues' onAction='OnKeepValues'
-                  screentip='Replace formulas with their values (visible cells only). Shortcut: Ctrl+Q'/>
-          <button id='ptRegexReplace' label='Regex Replace...' size='large'
-                  imageMso='ReplaceDialog' onAction='OnRegexReplace'
-                  screentip='Regex find &amp; replace with capture groups ($1) and a before/after preview — scoped to the selection or the whole sheet'/>
-          <button id='ptSmartFill' label='Smart Fill Down' imageMso='FillDown' onAction='OnSmartFill'
-                  screentip='Fill down incrementing the trailing number (Z07→Z08…, IP last octet); two seeds set the step; skips hidden rows. Shortcut: Ctrl+Shift+D'/>
+      <tab id='ptTab' label='" + RibbonTabLabel + @"'>
+        <group id='ptHome' label='Power Tools'>
+          <toggleButton id='ptHub' label='Tools Hub' size='large' image='ptHubIcon'
+                  onAction='OnToggleHub' getPressed='GetHubPressed'
+                  screentip='Open the Power Tools Hub'
+                  supertip='Browse and search every command, change add-in settings, and reach specialist or experimental tools in one docked window.'/>
           <button id='ptUndo' label='Undo PT' imageMso='Undo' onAction='OnUndoPt'
-                  screentip='Undo the last timeline step (50 deep). Plain Ctrl+Z also works right after a PT operation. Shortcut: Ctrl+Alt+Z'/>
+                  getEnabled='GetUndoEnabled'
+                  screentip='Undo the latest Power Tools timeline step (Ctrl+Alt+Z)'/>
           <button id='ptRedo' label='Redo PT' imageMso='Redo' onAction='OnRedoPt'
-                  screentip='Redo an undone timeline step. Shortcut: Ctrl+Alt+Y'/>
-          <button id='ptTimeline' label='Timeline' imageMso='History' onAction='OnTimeline'
-                  screentip='Show the undo timeline (PT operations + tracked manual edits) and jump to any step'/>
-          <toggleButton id='ptTrackEdits' label='Track edits' imageMso='TrackChanges'
-                  onAction='OnToggleTrackEdits' getPressed='GetTrackEditsPressed'
-                  screentip='Feed your manual cell edits into the undo timeline (typing, delete, paste-over-selection). Formatting and structural changes are not tracked.'/>
+                  getEnabled='GetRedoEnabled'
+                  screentip='Redo the latest undone timeline step (Ctrl+Alt+Y)'/>
+          <button id='ptTimeline' label='Timeline' image='ptTimelineIcon16' onAction='OnTimeline'
+                  screentip='Inspect the full undo and manual-edit timeline'/>
         </group>
-        <group id='ptCsv' label='CSV'>
-          <button id='ptCsvOpen' label='Open CSV/TXT' size='large' imageMso='FileOpen' onAction='OnOpenCsv'
-                  screentip='Open a CSV/TXT without letting Excel corrupt it: cells load as Text, delimiter/encoding/line-ending detected, header/zebra styling applied'/>
-          <button id='ptCsvSave' label='Save CSV' imageMso='Save' onAction='OnSaveCsv'
-                  screentip='Save back to the opened file, byte-faithfully, with a .bak backup'/>
-          <button id='ptCsvExport' label='Export as CSV' imageMso='SaveAs' onAction='OnExportCsv'
-                  screentip='Write the active sheet to a CSV with a chosen separator'/>
-          <button id='ptCsvRestyle' label='Re-style' imageMso='FormatPainter' onAction='OnRestyleCsv'
-                  screentip='Re-detect the header and re-apply the CSV view styling'/>
-          <button id='ptCsvBackup' label='Backup' imageMso='Copy' onAction='OnBackupCsv'
-                  screentip='Copy the opened CSV file to a timestamped backup'/>
-          <toggleButton id='ptCsvIntercept' label='Intercept opens' imageMso='TextToColumns'
-                  onAction='OnToggleIntercept' getPressed='GetInterceptPressed'
-                  screentip='When Excel opens a .csv natively (double-click, File Open), re-route it through the safe CSV pipeline'/>
+
+        <group id='ptCompare' label='Compare &amp; review'>
+          <splitButton id='ptCompareSplit' size='large'>
+            <button id='ptComparePrimary' label='Compare revisions' image='ptCompareIcon' onAction='OnCompareRevisions'
+                    screentip='Build a multi-revision comparison project'
+                    supertip='Choose every available revision, correct the inferred order and parent links, then build an integrity-checked Review workbook with aligned logical changes and history.'/>
+            <menu id='ptCompareMenu' label='Compare revisions' itemSize='large'>
+              <button id='ptCompareProjectMenu' label='New comparison project...' image='ptCompareIcon' onAction='OnCompareRevisions'
+                      screentip='Compare two to twenty revisions with editable lineage and conservative alignment'/>
+              <button id='ptCompareFilesMenu' label='Exact two-file preview...' image='ptCompareIcon' onAction='OnCompareFiles'
+                      screentip='Generate a positional exact pairwise Review workbook'/>
+              <button id='ptOpenReviewMenu' label='Review workbook in Hub...' imageMso='FileOpen' onAction='OnOpenReview'
+                      screentip='Validate a saved Review workbook and continue its decision ledger in the Hub'/>
+            </menu>
+          </splitButton>
         </group>
-        <group id='ptData' label='Data'>
-          <button id='ptStats' label='Column Stats' size='large' imageMso='AutoSum' onAction='OnColumnStats'
-                  screentip='Live profile of the active cell&apos;s column: counts, distinct, numeric range, top values'/>
-          <button id='ptSortAsc' label='Sort A-Z (nat)' imageMso='SortAscendingExcel' onAction='OnSortAsc'
-                  screentip='Stable natural sort of the data block by the active column (DI2 before DI10). Undo restores the original order.'/>
-          <button id='ptSortDesc' label='Sort Z-A (nat)' imageMso='SortDescendingExcel' onAction='OnSortDesc'
-                  screentip='Stable natural sort, descending'/>
-          <button id='ptDedup' label='Dedup by key' imageMso='RemoveDuplicates' onAction='OnDedup'
-                  screentip='Remove duplicate rows keyed on the selected column(s), keeping the first occurrence. Undoable.'/>
+
+        <group id='ptDelimited' label='Delimited workspace'>
+          <splitButton id='ptOpenSplit' size='large'>
+            <button id='ptOpenPrimary' label='Open data' image='ptOpenIcon' onAction='OnOpenCsv'
+                    screentip='Open delimited files'
+                    supertip='Open one or more CSV, TSV or separated-value TXT files as sheets in one indexed workspace.'/>
+            <menu id='ptOpenMenu' label='Open data' itemSize='large'>
+              <button id='ptOpenFilesMenu' label='Open files...' imageMso='FileOpen' onAction='OnOpenCsv'
+                      screentip='Choose one or more CSV, TSV or separated-value TXT files'/>
+              <button id='ptOpenFolderMenu' label='Open whole folder...' imageMso='FileOpen' onAction='OnOpenCsvFolder'
+                      screentip='Open every supported delimited file in a folder'/>
+            </menu>
+          </splitButton>
+          <button id='ptCsvSave' label='Save file' size='large' image='ptSaveIcon' onAction='OnSaveCsv'
+                  getEnabled='GetCsvSourceEnabled'
+                  screentip='Safely save the active source file'
+                  supertip='Write the active source sheet back to disk with external-change protection and a backup.'/>
+          <button id='ptCsvSaveAll' label='Save all' image='ptSaveAllIcon16' onAction='OnSaveAllCsv'
+                  getEnabled='GetCsvWorkspaceEnabled'
+                  screentip='Save every edited source sheet in this workspace'/>
+          <button id='ptCsvIndex' label='Index' image='ptIndexIcon16' onAction='OnCsvIndex'
+                  getEnabled='GetCsvWorkspaceEnabled'
+                  screentip='Refresh and show the workspace file index'/>
         </group>
-        <group id='ptWorkbook' label='Workbook'>
-          <button id='ptSplitWb' label='Split into files...' imageMso='CreateReportFromWizard'
-                  onAction='OnSplitWorkbook'
-                  screentip='Split this workbook into several files of N sheets each'/>
+
+        <group id='ptTransform' label='Transform'>
+          <button id='ptKeepValues' label='Keep values' size='large' image='ptValuesIcon' onAction='OnKeepValues'
+                  screentip='Replace formulas with their current values'
+                  supertip='Convert formulas to values in visible selected cells. Shortcut: Ctrl+Q.'/>
+          <button id='ptSmartFill' label='Smart fill' imageMso='FillDown' onAction='OnSmartFill'
+                  screentip='Fill down intelligently (Ctrl+Shift+D)'/>
+          <button id='ptChangeField' label='Change field...' imageMso='TableColumnsInsertLeft' onAction='OnChangeField'
+                  screentip='Edit one delimited field inside every selected cell'/>
+          <button id='ptRegexReplace' label='Regex replace...' imageMso='ReplaceDialog' onAction='OnRegexReplace'
+                  screentip='Preview and apply regex replacements'/>
         </group>
-        <group id='ptIoListX' label='IO List [exp]'>
-          <button id='ptXAddr' label='Build //Address' imageMso='TableColumnsInsertLeft' onAction='OnXBuildAddress'
-                  screentip='[experimental] Add the //Address helper column (I|O.node.offset.bit) to a plant Inputs/Outputs CSV. Helper columns are never saved into the CSV.'/>
-          <button id='ptXPull' label='Get IO-list data' imageMso='PasteValues' onAction='OnXPullIoData'
-                  screentip='[experimental] Fill //Mnemonic, //ID, //Description... from the IO-list workbook, matched on node.offset.card.bit (card = BOARD NUMBER)'/>
-          <button id='ptXPullMn' label='Get mnemonics' imageMso='Copy' onAction='OnXPullMnemonics'
-                  screentip='[experimental] On an IO-list sheet: fill //Address + //Mnemonic from the plant CSVs (multiple names joined with /)'/>
+
+        <group id='ptIoBridge' label='IO Bridge [exp]'>
+          <button id='ptIobOpen' label='Open workspace' size='large' imageMso='FileOpen' onAction='OnIobOpen'
+                  screentip='Build the IO Bridge workspace'
+                  supertip='Join an IO-list workbook with its Plant Inputs/Outputs CSVs. Edits queue instead of applying; a batch apply writes the real files.'/>
+          <button id='ptIobRowActions' label='Row actions' imageMso='ListBullets' onAction='OnIobRowActions'
+                  screentip='Queue linked-field updates, integrate, disable/enable or delete for the selected row'/>
+          <button id='ptIobApply' label='Apply queue' imageMso='ReviewAcceptChange' onAction='OnIobApply'
+                  screentip='Write the included pending actions to the CSVs and the IO-list workbook'/>
+          <button id='ptIobRefresh' label='Refresh' imageMso='RefreshAll' onAction='OnIobRefresh'
+                  screentip='Rebuild the bridge sheets from the current documents; the queue re-anchors'/>
         </group>
-        <group id='ptFramework' label='Framework'>
-          <button id='ptOpenVs' label='Open in VS' size='large' imageMso='ViewCode'
-                  onAction='OnOpenInVs'
-                  screentip='Open this add-in&apos;s solution in Visual Studio (the Alt+F11 equivalent)'/>
-          <button id='ptOpenRepo' label='Repo folder' imageMso='Folder'
-                  onAction='OnOpenRepo' screentip='Open the repository folder in Explorer'/>
-          <button id='ptOpenOut' label='Build output' imageMso='FileOpen'
-                  onAction='OnOpenBuildOutput' screentip='Open the folder the loaded .xll was built into'/>
-          <button id='ptAbout' label='About' imageMso='Info'
-                  onAction='OnAbout' screentip='Version, loaded .xll path, and resolved repo/solution'/>
+
+        <group id='ptData' label='Clean &amp; analyze'>
+          <splitButton id='ptSortSplit'>
+            <button id='ptSortPrimary' label='Natural sort' imageMso='SortAscendingExcel' onAction='OnSortAsc'
+                    screentip='Natural sort ascending (DI2 before DI10)'/>
+            <menu id='ptSortMenu' label='Natural sort' itemSize='normal'>
+              <button id='ptSortAscMenu' label='Ascending' imageMso='SortAscendingExcel' onAction='OnSortAsc'/>
+              <button id='ptSortDescMenu' label='Descending' imageMso='SortDescendingExcel' onAction='OnSortDesc'/>
+            </menu>
+          </splitButton>
+          <button id='ptDedup' label='Deduplicate' imageMso='RemoveDuplicates' onAction='OnDedup'
+                  screentip='Remove duplicate rows by the selected key columns'/>
+          <button id='ptStats' label='Column stats' imageMso='AutoSum' onAction='OnColumnStats'
+                  screentip='Open a live profile for the active column'/>
         </group>
       </tab>
     </tabs>
@@ -97,7 +131,80 @@ namespace ExcelPowerTools
 </customUI>";
         }
 
-        // ---- ribbon callbacks -----------------------------------------------------------------
+        public override object LoadImage(string imageId)
+            => RibbonIcons.Get(imageId) ?? base.LoadImage(imageId);
+
+        public void OnRibbonLoad(IRibbonUI ribbon)
+        {
+            _ribbon = ribbon;
+            if (_eventsAttached) return;
+
+            PowerToolsPaneManager.VisibilityChanged += OnPaneVisibilityChanged;
+            UndoManager.Changed += OnHistoryChanged;
+            SelectionEvents.Changed += OnExcelContextChanged;
+            _eventsAttached = true;
+        }
+
+        public override void OnDisconnection(ext_DisconnectMode removeMode, ref Array custom)
+        {
+            if (_eventsAttached)
+            {
+                PowerToolsPaneManager.VisibilityChanged -= OnPaneVisibilityChanged;
+                UndoManager.Changed -= OnHistoryChanged;
+                SelectionEvents.Changed -= OnExcelContextChanged;
+                _eventsAttached = false;
+            }
+            _ribbon = null;
+            base.OnDisconnection(removeMode, ref custom);
+        }
+
+        private void OnPaneVisibilityChanged() => InvalidateControl("ptHub");
+
+        private void OnHistoryChanged()
+        {
+            InvalidateControl("ptUndo");
+            InvalidateControl("ptRedo");
+        }
+
+        private void OnExcelContextChanged()
+        {
+            InvalidateControl("ptCsvSave");
+            InvalidateControl("ptCsvSaveAll");
+            InvalidateControl("ptCsvIndex");
+        }
+
+        private void InvalidateControl(string id)
+        {
+            try { _ribbon?.InvalidateControl(id); }
+            catch { }
+        }
+
+        // ---- primary ribbon callbacks -----------------------------------------------------------
+
+        public void OnToggleHub(IRibbonControl control, bool pressed) => PowerToolsPaneManager.SetVisible(pressed);
+        public bool GetHubPressed(IRibbonControl control) => PowerToolsPaneManager.IsVisible;
+        public bool GetUndoEnabled(IRibbonControl control) => UndoManager.UndoEntries.Count > 0;
+        public bool GetRedoEnabled(IRibbonControl control) => UndoManager.RedoEntries.Count > 0;
+        public bool GetCsvSourceEnabled(IRibbonControl control)
+        {
+            try
+            {
+                dynamic app = ExcelDna.Integration.ExcelDnaUtil.Application;
+                return CsvSession.Get(app?.ActiveSheet) != null;
+            }
+            catch { return false; }
+        }
+
+        public bool GetCsvWorkspaceEnabled(IRibbonControl control)
+        {
+            try
+            {
+                dynamic app = ExcelDna.Integration.ExcelDnaUtil.Application;
+                return CsvSession.IsWorkspaceWorkbook(app?.ActiveWorkbook);
+            }
+            catch { return false; }
+        }
+
         public void OnChangeField(IRibbonControl control) => FieldEditorCommands.ChangeField();
         public void OnKeepValues(IRibbonControl control) => SelectionCommands.KeepValuesOnly();
         public void OnRegexReplace(IRibbonControl control) => RegexReplaceCommands.ShowRegexReplace();
@@ -109,23 +216,33 @@ namespace ExcelPowerTools
         public void OnSortAsc(IRibbonControl control) => DataCommands.SortAscending();
         public void OnSortDesc(IRibbonControl control) => DataCommands.SortDescending();
         public void OnDedup(IRibbonControl control) => DataCommands.DedupRows();
-
-        // Experimental IO-list bridge
-        public void OnXBuildAddress(IRibbonControl control) => Experimental.IoListCommands.BuildAddressColumn();
-        public void OnXPullIoData(IRibbonControl control) => Experimental.IoListCommands.PullFromIoList();
-        public void OnXPullMnemonics(IRibbonControl control) => Experimental.IoListCommands.PullMnemonicsIntoIoList();
-        public void OnToggleTrackEdits(IRibbonControl control, bool pressed) => Interop.ManualEditTracker.SetEnabled(pressed);
-        public bool GetTrackEditsPressed(IRibbonControl control) => Interop.ManualEditTracker.Enabled;
         public void OnOpenCsv(IRibbonControl control) => CsvCommands.OpenCsv();
+        public void OnOpenCsvFolder(IRibbonControl control) => CsvCommands.OpenCsvFolder();
         public void OnSaveCsv(IRibbonControl control) => CsvCommands.SaveCsv();
+        public void OnSaveAllCsv(IRibbonControl control) => CsvCommands.SaveAllCsv();
+        public void OnCsvIndex(IRibbonControl control) => CsvCommands.ShowIndex();
+        public void OnCompareRevisions(IRibbonControl control) => ComparisonProjectCommands.StartComparisonProject();
+        public void OnCompareFiles(IRibbonControl control) => ComparisonCommands.StartExactPreview();
+        public void OnOpenReview(IRibbonControl control) => PowerToolsPaneManager.OpenComparisonReviewPicker();
+
+        // ---- callbacks retained for the hub and macro compatibility ------------------------------
+
         public void OnExportCsv(IRibbonControl control) => CsvCommands.ExportSheetAsCsv();
         public void OnRestyleCsv(IRibbonControl control) => CsvCommands.RestyleActiveSheet();
         public void OnBackupCsv(IRibbonControl control) => CsvCommands.BackupActiveFile();
         public void OnToggleIntercept(IRibbonControl control, bool pressed) => CsvCommands.SetInterceptOpen(pressed);
         public bool GetInterceptPressed(IRibbonControl control) => CsvCommands.InterceptOpenEnabled();
+        public void OnToggleTrackEdits(IRibbonControl control, bool pressed) => ManualEditTracker.SetEnabled(pressed);
+        public bool GetTrackEditsPressed(IRibbonControl control) => ManualEditTracker.Enabled;
         public void OnSplitWorkbook(IRibbonControl control) => WorkbookCommands.ExportSheetsAsFiles();
+        public void OnXBuildAddress(IRibbonControl control) => Experimental.IoListCommands.BuildAddressColumn();
+        public void OnXPullIoData(IRibbonControl control) => Experimental.IoListCommands.PullFromIoList();
+        public void OnXPullMnemonics(IRibbonControl control) => Experimental.IoListCommands.PullMnemonicsIntoIoList();
 
-        // Framework / dev-loop callbacks
+        public void OnIobOpen(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.OpenWorkspace();
+        public void OnIobRowActions(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.RowActions();
+        public void OnIobApply(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.ApplyBatch();
+        public void OnIobRefresh(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.RefreshWorkspace();
         public void OnOpenInVs(IRibbonControl control) => DevCommands.OpenSolutionInVisualStudio();
         public void OnOpenRepo(IRibbonControl control) => DevCommands.OpenRepoFolder();
         public void OnOpenBuildOutput(IRibbonControl control) => DevCommands.OpenBuildOutputFolder();

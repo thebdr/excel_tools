@@ -33,7 +33,7 @@ namespace ExcelPowerTools.Commands
             if (b == null) return;
 
             int keyOffset = b.ActiveColumn - b.C0;
-            if (keyOffset < 0 || keyOffset >= b.Cols) keyOffset = 0;
+            if (keyOffset < 0 || keyOffset >= b.DataCols) keyOffset = 0;
 
             var order = Enumerable.Range(b.DataStart, b.Rows - b.DataStart).ToList();
             var sorted = ascending
@@ -51,13 +51,20 @@ namespace ExcelPowerTools.Commands
             {
                 dynamic dataRange = b.DataRange();
                 UndoManager.CaptureBlock(undo, dataRange);
+                if (b.Session != null && b.RecordMarkerColumn > 0)
+                    UndoManager.CaptureCell(undo, b.Sheet, b.R0 + b.Rows, b.RecordMarkerColumn);
 
                 var outGrid = new object[b.Rows - b.DataStart, b.Cols];
                 for (int i = 0; i < sorted.Count; i++)
                     for (int c = 0; c < b.Cols; c++)
                         outGrid[i, c] = b.Formulas[sorted[i], c];
 
-                dataRange.Formula = outGrid;
+                dataRange.FormulaR1C1 = outGrid;
+
+                // Typing below the sentinel expands the logical source without first moving it. Sorting
+                // then moves the token with its row, so restore the boundary after the final record.
+                if (b.Session != null)
+                    CsvSheet.SyncRecordMarkers(b.Sheet, b.Session, b.Rows);
             }
             UndoManager.Push(undo);
         }
@@ -100,6 +107,8 @@ namespace ExcelPowerTools.Commands
             {
                 dynamic dataRange = b.DataRange();
                 UndoManager.CaptureBlock(undo, dataRange);
+                if (b.Session != null && b.RecordMarkerColumn > 0)
+                    UndoManager.CaptureCell(undo, b.Sheet, b.R0 + b.Rows, b.RecordMarkerColumn);
 
                 var outGrid = new object[b.Rows - b.DataStart, b.Cols];
                 for (int i = 0; i < kept.Count; i++)
@@ -110,12 +119,15 @@ namespace ExcelPowerTools.Commands
                     for (int c = 0; c < b.Cols; c++)
                         outGrid[i, c] = "";
 
-                dataRange.Formula = outGrid;
+                dataRange.FormulaR1C1 = outGrid;
 
                 int firstEmptyRow = b.R0 + b.DataStart + kept.Count;
                 int lastRow = b.R0 + b.Rows - 1;
                 if (firstEmptyRow <= lastRow)
                     b.Sheet.Range(b.Sheet.Cells(firstEmptyRow, b.C0), b.Sheet.Cells(lastRow, b.C0 + b.Cols - 1)).ClearContents();
+
+                if (b.Session != null)
+                    CsvSheet.SyncRecordMarkers(b.Sheet, b.Session, b.DataStart + kept.Count);
             }
             UndoManager.Push(undo);
 
@@ -128,8 +140,11 @@ namespace ExcelPowerTools.Commands
         {
             public dynamic Sheet;
             public int R0, C0, Rows, Cols;
+            public int DataCols;         // columns eligible for headers and sort/dedup keys
             public int DataStart;        // block-relative index of the first data row (after the header)
             public int ActiveColumn;     // absolute sheet column of the active cell
+            public CsvSession Session;
+            public int RecordMarkerColumn = -1;
             public string[,] Formulas;   // what to rewrite with (preserves formulas)
             public string[,] Texts;      // faithful display texts (sort keys, dedup keys, header detect)
 
@@ -145,8 +160,50 @@ namespace ExcelPowerTools.Commands
 
             dynamic sheet = active.Worksheet;
             dynamic region = active.CurrentRegion;
+            int r0 = (int)region.Row;
+            int c0 = (int)region.Column;
             int rows = (int)region.Rows.Count;
             int cols = (int)region.Columns.Count;
+            int dataCols = cols;
+            CsvSession csvSession = null;
+            int recordMarkerColumn = -1;
+
+            // A source worksheet has hidden logical-record columns outside CurrentRegion. Row operations
+            // must move them (and later // helper columns) with the visible values; dedup must also clear
+            // their tail, otherwise removed records survive as blank lines when the source is saved.
+            int markerColumn, sourceColumns, logicalRows;
+            string sourceMarkerToken;
+            bool hasWorkspaceLayout = CsvSheet.TryGetWorkspaceLayout(
+                (object)sheet, out markerColumn, out sourceColumns, out logicalRows, out sourceMarkerToken);
+            csvSession = CsvSession.Get((object)sheet);
+            if (csvSession != null && !hasWorkspaceLayout)
+            {
+                Dialogs.Info(CsvSheet.DamagedBoundaryRecovery);
+                return null;
+            }
+            if (csvSession == null && (hasWorkspaceLayout || CsvSheet.HasWorkspaceMetadataCandidate((object)sheet)))
+            {
+                Dialogs.Info("This sheet contains CSV workspace metadata but is not attached to an open source session. Reopen the source file before using row tools.");
+                return null;
+            }
+            if (csvSession != null && hasWorkspaceLayout)
+            {
+                if (logicalRows >= 1048576)
+                {
+                    Dialogs.Info("This source currently uses Excel's final row, so there is no room for its " +
+                                 "record-boundary sentinel. Delete at least one worksheet row before using row tools.");
+                    return null;
+                }
+                int lastColumn = (int)RangeHelpers.LastColumn(sheet);
+                r0 = 1;
+                c0 = 1;
+                rows = logicalRows;
+                dataCols = sourceColumns;
+                cols = lastColumn;
+                recordMarkerColumn = markerColumn;
+                if (rows > 0)
+                    region = sheet.Range(sheet.Cells(r0, c0), sheet.Cells(r0 + rows - 1, c0 + cols - 1));
+            }
             if (rows < 2)
             {
                 Dialogs.Info("No data block around the selection (need at least 2 rows).");
@@ -156,14 +213,18 @@ namespace ExcelPowerTools.Commands
             var b = new Block
             {
                 Sheet = sheet,
-                R0 = (int)region.Row,
-                C0 = (int)region.Column,
+                R0 = r0,
+                C0 = c0,
                 Rows = rows,
                 Cols = cols,
+                DataCols = dataCols,
                 ActiveColumn = (int)active.Column,
+                Session = csvSession,
+                RecordMarkerColumn = recordMarkerColumn,
             };
 
-            object rawFormulas = region.Formula;
+            // R1C1 keeps relative formulas relative to their row when records and helper cells move.
+            object rawFormulas = region.FormulaR1C1;
             object rawValues = region.Value2;
             b.Formulas = ReadGrid(rawFormulas, rows, cols, null, null, 0, 0);
             b.Texts = ReadGrid(rawValues, rows, cols, new CellTextReader(CsvSheet.CellText), sheet, b.R0, b.C0);
@@ -172,8 +233,8 @@ namespace ExcelPowerTools.Commands
             var rowsList = new List<string[]>(rows);
             for (int r = 0; r < rows; r++)
             {
-                var row = new string[cols];
-                for (int c = 0; c < cols; c++) row[c] = b.Texts[r, c];
+                var row = new string[dataCols];
+                for (int c = 0; c < dataCols; c++) row[c] = b.Texts[r, c];
                 rowsList.Add(row);
             }
             int header = CsvDetect.DetectHeaderRow(rowsList, "#");
@@ -227,12 +288,12 @@ namespace ExcelPowerTools.Commands
                     int c0 = (int)ar.Column;
                     int cc = (int)ar.Columns.Count;
                     for (int c = c0; c < c0 + cc; c++)
-                        if (c >= b.C0 && c < b.C0 + b.Cols) cols.Add(c - b.C0);
+                        if (c >= b.C0 && c < b.C0 + b.DataCols) cols.Add(c - b.C0);
                 }
             }
             catch { }
 
-            if (cols.Count == 0) cols.Add(Math.Max(0, Math.Min(b.ActiveColumn - b.C0, b.Cols - 1)));
+            if (cols.Count == 0) cols.Add(Math.Max(0, Math.Min(b.ActiveColumn - b.C0, b.DataCols - 1)));
             return cols.ToList();
         }
     }

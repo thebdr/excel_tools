@@ -74,11 +74,17 @@ namespace ExcelPowerTools.Commands
             var name = typeof(DevCommands).Assembly.GetName();
             Dialogs.Info(
                 "Excel Power Tools — framework\n\n" +
-                $"Version:    {name.Version}\n" +
+                $"Version:    {DisplayVersion(name.Version)}\n" +
                 $"Loaded xll: {FrameworkPaths.XllPath}\n" +
                 $"Repo root:  {FrameworkPaths.RepoRoot ?? "(unknown)"}\n" +
                 $"Solution:   {FrameworkPaths.SolutionFile ?? "(not found)"}\n" +
                 $"Runtime:    .NET {Environment.Version}");
+        }
+
+        private static string DisplayVersion(Version version)
+        {
+            if (version == null) return "(unknown)";
+            return version.Major + "." + version.Minor + "." + Math.Max(0, version.Build);
         }
 
         private static void OpenWithShell(string path)

@@ -38,6 +38,10 @@ namespace ExcelPowerTools.Interop
 
         private static readonly List<UndoEntry> _undo = new List<UndoEntry>();
         private static readonly List<UndoEntry> _redo = new List<UndoEntry>();
+        private static int _applyDepth;
+
+        /// <summary>True while saved cell blocks are being restored; event handlers must not rewrite them.</summary>
+        internal static bool IsApplying => _applyDepth > 0;
 
         /// <summary>Raised whenever the stacks change (push, undo, redo) — the Timeline window listens.</summary>
         public static event Action Changed;
@@ -69,6 +73,19 @@ namespace ExcelPowerTools.Interop
             f[0, 0] = FormulaString(sheet.Cells(row, col).Formula);
             entry.Blocks.Add(new UndoBlock { Row = row, Col = col, Formulas = f });
             entry.CellCount++;
+        }
+
+        /// <summary>Snapshots a cell only when an earlier block does not already contain its pre-action state.</summary>
+        public static void CaptureCellIfNotCovered(UndoEntry entry, dynamic sheet, int row, int col)
+        {
+            if (entry == null) return;
+            foreach (UndoBlock block in entry.Blocks)
+            {
+                int rows = block.Formulas.GetLength(0), cols = block.Formulas.GetLength(1);
+                if (row >= block.Row && row < block.Row + rows &&
+                    col >= block.Col && col < block.Col + cols) return;
+            }
+            CaptureCell(entry, sheet, row, col);
         }
 
         /// <summary>Snapshots a rectangular range in one COM call (call BEFORE writing it).</summary>
@@ -112,6 +129,27 @@ namespace ExcelPowerTools.Interop
             if (entry == null || entry.CellCount == 0) return;
 
             AddToUndo(entry);
+            _redo.Clear();
+            RaiseChanged();
+        }
+
+        /// <summary>
+        /// A companion programmatic write extended the latest manual edit (for example moving CSV metadata),
+        /// which clears Excel's native undo stack. Register the already-stacked entry as the replacement.
+        /// </summary>
+        public static void PromoteLatestManualUndo(UndoEntry entry)
+        {
+            if (entry == null || !entry.IsManualEdit || _undo.Count == 0 ||
+                !ReferenceEquals(_undo[_undo.Count - 1], entry)) return;
+            _redo.Clear();
+            RegisterOnUndo("Undo " + entry.Description + " (Power Tools)", "PT_UndoLast");
+            RaiseChanged();
+        }
+
+        /// <summary>Creates a safety barrier after an untracked edit so older steps cannot overwrite it.</summary>
+        public static void ClearHistory()
+        {
+            _undo.Clear();
             _redo.Clear();
             RaiseChanged();
         }
@@ -192,29 +230,34 @@ namespace ExcelPowerTools.Interop
                 IsManualEdit = e.IsManualEdit,
             };
 
-            using (new ExcelStateGuard(manualCalculation: true))
+            _applyDepth++;
+            try
             {
-                foreach (UndoBlock b in e.Blocks)
+                using (new ExcelStateGuard(manualCalculation: true))
                 {
-                    int rows = b.Formulas.GetLength(0), cols = b.Formulas.GetLength(1);
-                    dynamic range = sheet.Range(sheet.Cells(b.Row, b.Col), sheet.Cells(b.Row + rows - 1, b.Col + cols - 1));
-
-                    CaptureBlock(inverse, range);   // current content, so the step can be re-done
-
-                    if (rows == 1 && cols == 1)
+                    foreach (UndoBlock b in e.Blocks)
                     {
-                        SetCell(sheet.Cells(b.Row, b.Col), b.Formulas[0, 0]);
-                    }
-                    else
-                    {
-                        var data = new object[rows, cols];
-                        for (int r = 0; r < rows; r++)
-                            for (int c = 0; c < cols; c++)
-                                data[r, c] = b.Formulas[r, c];
-                        range.Formula = data;
+                        int rows = b.Formulas.GetLength(0), cols = b.Formulas.GetLength(1);
+                        dynamic range = sheet.Range(sheet.Cells(b.Row, b.Col), sheet.Cells(b.Row + rows - 1, b.Col + cols - 1));
+
+                        CaptureBlock(inverse, range);   // current content, so the step can be re-done
+
+                        if (rows == 1 && cols == 1)
+                        {
+                            SetCell(sheet.Cells(b.Row, b.Col), b.Formulas[0, 0]);
+                        }
+                        else
+                        {
+                            var data = new object[rows, cols];
+                            for (int r = 0; r < rows; r++)
+                                for (int c = 0; c < cols; c++)
+                                    data[r, c] = b.Formulas[r, c];
+                            range.Formula = data;
+                        }
                     }
                 }
             }
+            finally { _applyDepth--; }
 
             try { sheet.Activate(); } catch { }
             return inverse;

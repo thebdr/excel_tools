@@ -2,38 +2,50 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace ExcelPowerTools.Core.Experimental
 {
     /// <summary>
-    /// EXPERIMENTAL — pure logic for the IO-list ↔ plant-CSV bridge. Legacy IO-list format:
-    /// "PC Board Rack.Slot.Card" column holds node.offset.card; the CSV holds Node/Offset/Bit and
-    /// BOARD NUMBER (= card). The physical join key is node.offset.card.bit; the displayed address
-    /// is I|O.node.offset.bit. Remove together with src/ExcelPowerTools/Experimental and the tests.
+    /// EXPERIMENTAL — pure logic for the IO-list ↔ plant-CSV bridge.
+    ///
+    /// IO-list layout: one worksheet per card, named "R{rack}.S{slot}.C{card}" with an optional free-text
+    /// suffix ("R1.S2.C1 - PC2"); the CARD comes from the sheet NAME, not from a column. Signal rows carry
+    /// the full address in the "Bit" column as "I.node.offset.bit" ("Q" = output). Module rows (Type "PA")
+    /// have an empty "Bit" and carry the node in "ID".
+    ///
+    /// Plant CSV: Node / Offset / Bit + Card (a.k.a. "Board number"). Bus-diagnostic signals (Type 11)
+    /// have no bit address — they join on the node alone, against the module rows.
+    ///
+    /// The physical join key is DIRECTION.node.offset.card.bit; the node-only key is card#node.
+    /// Remove together with src/ExcelPowerTools/Experimental and the tests.
     /// </summary>
     public static class IoListLogic
     {
+        private static readonly Regex CardSheetName =
+            new Regex(@"^\s*R(\d+)\s*\.\s*S(\d+)\s*\.\s*C(\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         /// <summary>
-        /// Splits "R1.S1.C2" (or bare "80.3.2") into rack "1", slot "1", card "2" — the card is the LAST
-        /// component; letter prefixes (R/S/C) are stripped, digits compared numerically.
+        /// Rack/slot/card from a worksheet NAME: "R1.S1.C2" or "R1.S2.C1 - PC2" → 1 / 2 / 1. Anything after
+        /// the card number is a label and is ignored; components normalize numerically ("C04" → "4").
         /// </summary>
-        public static bool TryParseRackSlotCard(string s, out string rack, out string slot, out string card)
+        public static bool TryParseCardSheetName(string sheetName, out string rack, out string slot, out string card)
         {
             rack = slot = card = null;
-            if (string.IsNullOrWhiteSpace(s)) return false;
+            if (string.IsNullOrWhiteSpace(sheetName)) return false;
 
-            string[] parts = s.Trim().Split('.');
-            if (parts.Length < 3) return false;
+            Match m = CardSheetName.Match(sheetName);
+            if (!m.Success) return false;
 
-            card = DigitsOf(parts[parts.Length - 1]);
-            slot = DigitsOf(parts[parts.Length - 2]);
-            rack = DigitsOf(string.Join(".", parts, 0, parts.Length - 2));
-            return rack.Length > 0 && slot.Length > 0 && card.Length > 0;
+            rack = Norm(m.Groups[1].Value);
+            slot = Norm(m.Groups[2].Value);
+            card = Norm(m.Groups[3].Value);
+            return true;
         }
 
         /// <summary>
-        /// Parses a full IO address "I.0080.3.0" into direction 'I'/'O' and numerically-normalized
-        /// node/offset/bit ("0080" → "80"). This is the format the legacy IO list stores per row.
+        /// Parses the IO-list address "I.2.0.0" / "Q.90.1.4" into direction and numerically-normalized
+        /// node/offset/bit. "Q" (Siemens output) is reported as 'O' so it meets the CSV Outputs side.
         /// </summary>
         public static bool TryParseAddress(string s, out char direction, out string node, out string offset, out string bit)
         {
@@ -44,6 +56,7 @@ namespace ExcelPowerTools.Core.Experimental
             if (parts.Length != 4 || parts[0].Length != 1) return false;
 
             char d = char.ToUpperInvariant(parts[0][0]);
+            if (d == 'Q') d = 'O';                       // the new lists write outputs as Q
             if (d != 'I' && d != 'O') return false;
             if (!AllDigits(parts[1]) || !AllDigits(parts[2]) || !AllDigits(parts[3])) return false;
 
@@ -52,16 +65,6 @@ namespace ExcelPowerTools.Core.Experimental
             offset = Norm(parts[2]);
             bit = Norm(parts[3]);
             return true;
-        }
-
-        /// <summary>The digits of a component ("C2" → "2"), numerically normalized ("02" → "2").</summary>
-        public static string DigitsOf(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            var sb = new StringBuilder(s.Length);
-            foreach (char c in s)
-                if (c >= '0' && c <= '9') sb.Append(c);
-            return Norm(sb.ToString());
         }
 
         private static bool AllDigits(string s)
@@ -81,10 +84,24 @@ namespace ExcelPowerTools.Core.Experimental
 
         /// <summary>
         /// The physical join key: DIRECTION.node.offset.card.bit ("I.80.3.2.0"), numerically normalized.
-        /// Direction is required — I.0080.3.0 and O.0080.3.0 coexist on the same card in real lists.
+        /// Direction is required — I.80.3.0 and O.80.3.0 coexist on the same card in real lists.
         /// </summary>
         public static string JoinKey(char direction, string node, string offset, string card, string bit) =>
             $"{char.ToUpperInvariant(direction)}.{Norm(node)}.{Norm(offset)}.{Norm(card)}.{Norm(bit)}";
+
+        /// <summary>
+        /// The node-only key "card#node", used by bus-diagnostic signals (CSV Type 11), which have no bit
+        /// address: they join against the IO-list module row whose "ID" is that node.
+        /// </summary>
+        public static string NodeKey(string card, string node) => $"{Norm(card)}#{Norm(node)}";
+
+        /// <summary>
+        /// Identifies one controller: "R{rack}.S{slot}". A slot holds a controller and a controller holds
+        /// several cards, so a card number is only unique WITHIN a slot — "R1.S2.C1" and "R1.S3.C1" are
+        /// different cards. A plant CSV belongs to one controller and its Card column is scoped to it, so
+        /// matching must be confined to a single controller before card numbers mean anything.
+        /// </summary>
+        public static string ControllerKey(string rack, string slot) => $"R{Norm(rack)}.S{Norm(slot)}";
 
         /// <summary>Numeric-normalizes a component ("07"→"7"); non-numeric values pass through trimmed.</summary>
         public static string Norm(string s)
@@ -96,16 +113,132 @@ namespace ExcelPowerTools.Core.Experimental
         }
 
         /// <summary>
-        /// True for virtual signals (Input/Output Type 5 or 6): not read from hardware I/O, and their
-        /// node/offset/bit/board are frequently stale copy-paste values — excluded from address matching.
+        /// True for virtual signals — not read from hardware I/O, their node/offset/bit/card are
+        /// frequently stale copy-paste values, so they are excluded from address matching.
+        /// The full CSV type taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI (data
+        /// exchange in, a struct) · 8 DEO · 9 VAI · 10 VAO · 11 BUS (remote node state).
+        /// Virtuals are the V* types: 5, 6, 9, 10.
         /// </summary>
         public static bool IsVirtualType(string typeValue)
         {
             string t = Norm(typeValue);
-            return t == "5" || t == "6";
+            return t == "5" || t == "6" || t == "9" || t == "10";
         }
 
-        /// <summary>'I' or 'O' from a file/sheet name ("Plant_Outputs.csv" → 'O'); '\0' when undecidable.</summary>
+        /// <summary>
+        /// True for bus-diagnostic signals (CSV Type 11, e.g. "CABINETAL00162"). They address a DEVICE, not
+        /// a bit: offset/bit are 0 and the join runs on the node alone.
+        /// </summary>
+        public static bool IsBusDiagnosticType(string typeValue) => Norm(typeValue) == "11";
+
+        /// <summary>
+        /// Drops the "BUS_" prefix the IO list puts on module-row mnemonics ("BUS_CABINETAL00161" →
+        /// "CABINETAL00161"); applied per "/"-joined part, since a module row can carry several.
+        /// </summary>
+        public static string StripBusPrefix(string mnemonic)
+        {
+            if (string.IsNullOrEmpty(mnemonic)) return mnemonic ?? "";
+
+            string[] parts = mnemonic.Split('/');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string p = parts[i].Trim();
+                parts[i] = p.StartsWith("BUS_", StringComparison.OrdinalIgnoreCase) ? p.Substring(4) : p;
+            }
+            return string.Join("/", parts);
+        }
+
+        /// <summary>
+        /// The comparison/index form of ONE mnemonic: trimmed, "BUS_" dropped, upper-cased. Two spellings
+        /// of the same signal ("BUS_CABINETAL00161" and "CABINETAL00161") share a key.
+        /// </summary>
+        public static string MnemonicKey(string mnemonic)
+        {
+            string p = (mnemonic ?? "").Trim();
+            if (p.StartsWith("BUS_", StringComparison.OrdinalIgnoreCase)) p = p.Substring(4);
+            return p.ToUpperInvariant();
+        }
+
+        /// <summary>The distinct keys of a "/"-joined mnemonic list; empty parts are dropped.</summary>
+        public static List<string> MnemonicKeys(string list)
+        {
+            var keys = new List<string>();
+            if (string.IsNullOrEmpty(list)) return keys;
+
+            foreach (string part in list.Split('/'))
+            {
+                string k = MnemonicKey(part);
+                if (k.Length > 0 && !keys.Contains(k)) keys.Add(k);
+            }
+            return keys;
+        }
+
+        /// <summary>
+        /// True when two "/"-joined mnemonic lists name the same SET of signals — order-insensitive,
+        /// "BUS_"-insensitive, duplicates and empty parts ignored. Two empty lists match.
+        /// </summary>
+        public static bool MnemonicSetsMatch(string a, string b)
+        {
+            var ka = MnemonicKeys(a);
+            var kb = MnemonicKeys(b);
+            if (ka.Count != kb.Count) return false;
+
+            foreach (string k in ka)
+                if (!kb.Contains(k)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// True when every mnemonic of <paramref name="expected"/> appears in <paramref name="pulled"/>.
+        /// Separates the two kinds of mismatch: a row whose own name is simply ACCOMPANIED by others
+        /// (one IO-list row carrying several mnemonics — usually fine) still covers, while a row whose
+        /// name is missing entirely means the two sides genuinely disagree about the signal.
+        /// </summary>
+        public static bool MnemonicSetCovers(string pulled, string expected)
+        {
+            var have = MnemonicKeys(pulled);
+            foreach (string k in MnemonicKeys(expected))
+                if (!have.Contains(k)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// The agreement verdict for one row, as "matched/total" — or EMPTY when the two sides name the
+        /// same set of signals, so only disagreements draw the eye.
+        ///
+        /// Only the address-matched mnemonics are judged; a mnemonic found elsewhere by name is reported
+        /// separately and never counts here. <paramref name="matchedByAddress"/> is what sits at the row's
+        /// address, <paramref name="rowMnemonics"/> is what the row calls itself, and
+        /// <paramref name="ioListMnemonics"/> is whichever of the two belongs to the IO LIST — it sets the
+        /// total, since the IO list is the reference. An empty address match yields no verdict at all.
+        /// </summary>
+        public static string MatchRatio(string rowMnemonics, string matchedByAddress, string ioListMnemonics)
+        {
+            var pulled = MnemonicKeys(matchedByAddress);
+            if (pulled.Count == 0) return "";                                  // nothing to compare against
+
+            var own = MnemonicKeys(rowMnemonics);
+            if (MnemonicSetsMatch(rowMnemonics, matchedByAddress)) return "";   // full agreement
+
+            int matched = 0;
+            foreach (string k in own)
+                if (pulled.Contains(k)) matched++;
+
+            int total = MnemonicKeys(ioListMnemonics).Count;
+            return matched.ToString(CultureInfo.InvariantCulture) + "/" +
+                   total.ToString(CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// How a module-row match is shown in the address column: "#236" (node 236). Module rows have no
+        /// bit address, so this is deliberately unlike the "I.236.0.0" of a signal row.
+        /// </summary>
+        public static string ModuleAddress(string node) => "#" + Norm(node);
+
+        /// <summary>A mnemonic tagged with where it lives: "LP100301@O.90.0.1".</summary>
+        public static string AtAddress(string mnemonic, string address) => mnemonic + "@" + address;
+
+        /// <summary>Direction from a file/sheet name ("Plant_Outputs.csv" → 'O'); '\0' when undecidable.</summary>
         public static char DirectionFromName(string name)
         {
             string n = (name ?? "").ToLowerInvariant();
@@ -138,6 +271,10 @@ namespace ExcelPowerTools.Core.Experimental
             return -1;
         }
 
+        /// <summary>
+        /// Lowercase letters/digits/dots only. Degree signs, spaces and brackets vanish, so
+        /// "Description language 1 (1° part) (permanent part)" → "descriptionlanguage11partpermanentpart".
+        /// </summary>
         public static string NormalizeHeader(string s)
         {
             if (string.IsNullOrEmpty(s)) return "";
@@ -145,7 +282,7 @@ namespace ExcelPowerTools.Core.Experimental
             foreach (char c in s)
             {
                 if (char.IsLetterOrDigit(c) || c == '.') sb.Append(char.ToLowerInvariant(c));
-                // whitespace, newlines, underscores, punctuation → dropped
+                // whitespace, newlines, underscores, punctuation, degree signs → dropped
             }
             return sb.ToString();
         }

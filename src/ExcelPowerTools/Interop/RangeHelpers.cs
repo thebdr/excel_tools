@@ -28,7 +28,8 @@ namespace ExcelPowerTools.Interop
             try
             {
                 dynamic col = sheet.Cells(1, column).EntireColumn;
-                dynamic found = col.Find("*", Type.Missing, Type.Missing, Type.Missing, Xl.xlByRows, Xl.xlPrevious);
+                dynamic found = col.Find(
+                    "*", Type.Missing, Xl.xlFormulas, Xl.xlPart, Xl.xlByRows, Xl.xlPrevious);
                 return found == null ? 1 : (long)(int)found.Row;
             }
             catch
@@ -63,8 +64,8 @@ namespace ExcelPowerTools.Interop
             return sheet.Cells.Find(
                 "*",
                 Type.Missing,
-                Type.Missing,
-                Type.Missing,
+                Xl.xlFormulas,
+                Xl.xlPart,
                 searchOrder,
                 Xl.xlPrevious);
         }

@@ -55,6 +55,19 @@ namespace ExcelPowerTools.Tests.Csv
         }
 
         [Fact]
+        public void Final_single_column_blank_record_is_quoted_when_there_is_no_trailing_newline()
+        {
+            var fmt = new CsvFormat { Delimiter = ';', LineEnding = CsvLineEnding.Lf, HasTrailingNewline = false };
+            var records = Rows(new[] { "a" }, new[] { "" });
+
+            string text = CsvWriter.Write(records, fmt);
+
+            Assert.Equal("a\n\"\"", text);
+            Assert.Equal(2, CsvParser.Parse(text, fmt).Count);
+            Assert.Equal("", CsvParser.Parse(text, fmt)[1].Fields[0]);
+        }
+
+        [Fact]
         public void Comment_prefix_row_written_like_any_other_row()
         {
             // No special handling: '#' fields are neither quoted nor kept verbatim — just joined.
