@@ -65,8 +65,9 @@ namespace ExcelPowerTools.Experimental.IoBridge
             string workspaceId = null;
             try
             {
-                // Paint frozen and events guarded from workbook creation through the whole build:
-                // the UI stays still until the finished workspace appears in one repaint.
+                // Curtain up, paint frozen, events guarded — from workbook creation through the whole
+                // build the UI stays still, then the finished workspace appears in one repaint.
+                using (new ExcelBuildOverlay("IO Bridge — building the workspace…"))
                 using (new ExcelPaintFreeze())
                 using (new ExcelStateGuard(suppressEvents: true))
                 {
@@ -144,6 +145,7 @@ namespace ExcelPowerTools.Experimental.IoBridge
                 var config = Core.Experimental.IoBridge.IoBridgeColumnLayout.ParseColumnsSheet(rows);
                 IoBridgeRegistry.SaveColumnConfig(config);
 
+                using (new ExcelBuildOverlay("IO Bridge — regrouping the workspace…"))
                 using (new ExcelPaintFreeze())
                 {
                     IoBridgeBuilder.BuildWorkspace(app, workbook, session);
@@ -186,6 +188,7 @@ namespace ExcelPowerTools.Experimental.IoBridge
 
             try
             {
+                using (new ExcelBuildOverlay("IO Bridge — refreshing from the documents…"))
                 using (new ExcelPaintFreeze())
                 {
                     IoBridgeBuilder.BuildWorkspace(app, workbook, session);

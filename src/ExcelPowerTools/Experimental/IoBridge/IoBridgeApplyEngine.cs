@@ -74,6 +74,7 @@ namespace ExcelPowerTools.Experimental.IoBridge
             string rebuildNote = "";
             try
             {
+                using (new ExcelBuildOverlay("IO Bridge — applying and rebuilding…"))
                 using (new ExcelPaintFreeze())
                 {
                     IoBridgeBuilder.BuildWorkspace(app, workbook, session);

@@ -215,8 +215,9 @@ address, so it is never mistaken for one.
 
 Two CSV types are handled apart from the address key:
 
-- **Type 5 / 6 (virtual)** — not hardware I/O; their address fields are frequently stale, so they are
-  excluded from matching and counted separately in the summary.
+- **Virtual types (5 VDI, 6 VDO, 9 VAI, 10 VAO)** — not hardware I/O; their address fields are
+  frequently stale, so they are excluded from matching and counted separately in the summary. The full
+  CSV type taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI · 8 DEO · 9 VAI · 10 VAO · 11 BUS.
 - **Type 11 (bus diagnostics)** — address a device, not a bit. They join on `card` + `node` alone,
   against the module rows. The IO list prefixes those mnemonics with `BUS_`; the prefix is dropped on
   the way into the CSV, since the CSV never carries it.
@@ -262,54 +263,72 @@ A dedicated workspace for the commissioning phase, when the IO list (electrical 
 (SW engineering) and the plant CSVs (machine controller) are corrected on both sides and IO-list
 additions must be integrated into the CSVs. Where the pull commands compare once and read-only, the
 IO Bridge **queues edits and applies them in batch to the real files** — CSVs through the byte-faithful
-CSV engine, the IO-list .xlsx directly via COM, formatting preserved.
+CSV engine, the IO-list .xlsx directly via COM. Commands live on the ribbon group **IO Bridge [exp]**,
+in the Tools Hub, and (while a session is live) on the cell right-click menu.
 
-**The workspace** — *IO Bridge: open workspace* asks for one IO-list workbook, which of its
-`R{rack}.S{slot}.C{card}` sheets to include, and one Inputs + one Outputs CSV. It generates a workbook
-with one sheet per card: the IO-list rows in their own order (the spine, so electrical's ordering and
-additions stay recognizable), each joined to its CSV record by the usual address/node keys; a `//Match`
-verdict column; unmatched CSV records of that card in a *CSV-only* section below. Sheets are **rebuilt
-fresh from the documents** on every open/refresh — the workbook itself is never the durable state, so
-saving it produces a dead copy (reopened copies are ignored by the commands).
+**Setup** (*open workspace*) — one IO-list workbook, which of its `R{rack}.S{slot}.C{card}` sheets, one
+Inputs + one Outputs CSV, plus per-session tuning: an **IO column limit** (first N source columns per
+sheet, 0 = all), a **compare-virtuals regex** (virtual CSV rows — types 5/6/9/10 — whose mnemonic
+matches join the comparison BY NAME, for the CLASSDIAGAL-style virtuals that mirror IO-list entries)
+and an **exclude regex** (IO-list rows whose mnemonic matches are shown but ignored: no claim, no
+verdict, faded). All remembered in the registry. Builds and refreshes run behind an opaque
+"working…" curtain — Excel's SDI window churn is covered, not fought.
 
-**Column groups** — columns are arranged group-by-group under real Excel outline groups (the +/-
-buttons). The generated `_Columns` sheet lists every column with its group, the group's order and its
-hidden-by-default flag (collapsed); edit it and run *IO Bridge: column config* — the configuration is
-saved per user in the registry, keyed by normalized header text, and the workspace regroups.
+**The view** — one sheet per card, IO-list rows in their own order and **columns in their source
+positions** (the workspace reads side by side with the original; source column widths and the
+revision-tracking interior colors come along, extracted headlessly from the file bytes). Then the CSV
+block (orange header, vs blue for the IO side), then `//Match` / `//Row` status columns; unmatched CSV
+records sit in a *CSV-only* section below, and the header row carries a ready AutoFilter. Font colors
+tell the state at a glance: clean rows green, unused spares (no descriptions, no device) and excluded
+rows grey, anomalies (`missing`, `n/m` ratios, CSV-only) full contrast. **Groups** are outline runs
+(+/- buttons) over contiguous same-group columns, configured on the `_Columns` sheet (group +
+hidden-by-default per column, registry-persisted, *column config* applies) — Excel merges two groups
+that touch, so leave a column ungrouped between them. Sheets are always **rebuilt fresh**; a saved
+workspace workbook is a dead copy.
 
-**Editing** — type directly into IO or CSV data cells: the change is **queued, not applied**; the cell
-keeps the typed value with a yellow pending highlight, and typing the original value back unqueues it.
-Generated cells (headers, status columns, the queue sheet) revert on edit. *IO Bridge: row actions*
-queues row-level operations for the selected row: the four **linked-field pairs** in either direction —
-address (CSV `Node`/`Offset`/`Bit` ↔ IO `Bit` column), mnemonic (CSV name ↔ IO `Mnemonic`),
-description (IO → CSV), normal condition (CSV `Logic` ↔ IO `Normal condition`) — plus *integrate an
-IO-only signal into the CSV* (the record is composed from the row; the CSV Type is asked, since the IO
-list cannot supply it), *disable/enable* (the `@`/`#` field-0 marker) and *delete the CSV row*.
+**Joining** — address/node keys as in the pulls, with **name-aware claiming**: when several IO rows
+share one address (a DEO struct binding point above the actual DO), each CSV record goes first to the
+IO row whose mnemonic carries its name; only unclaimed records fall back positionally. Several CSV
+records on one point (AUTOM/MANUAL pairs) all bind: values join with `/`, the verdict compares name
+SETS, and those CSV cells are view-only (per-record work goes through the expanded view). A named BUS
+module without its type-11 record reads `missing` like any gap.
 
-**The queue** — the `_Queue` sheet lists every action in queue order, the **Include column first**:
-double-click its ☑/☐ glyph to toggle (typed x/1/☑ or blank/0/☐ also count). Unchecked actions are
-skipped by Apply and stay queued. Repeated edits of the same field supersede each other but keep the
-**first** old value — the three-way base. The queue persists in a JSON sidecar
-(`<io-list>.iobridge.json`, next to the IO list, atomically written with a `.bak` on every change), so
-it survives Excel sessions and crashes; on rebuild every action **re-anchors**: file still holds the
-old value → Pending (typed value re-shown, highlighted); file already holds the new value →
-AppliedExternally; anything else → ConflictStale with what the file now holds.
+**Editing** — typing into IO or CSV data cells **queues** the change (the cell keeps the typed value,
+painted pending-yellow immediately; typing the old value back unqueues). *Row actions* — with
+letter accelerators, on one row or a whole selection — queue the linked-pair updates in either
+direction (M/N mnemonic, A/B address, C/D condition), description→CSV (E), **integrate** (I;
+signals ask the CSV Type once per direction, bus modules go straight in as type 11 with the `BUS_`
+prefix dropped; empty-mnemonic spares are never integrated), disable/enable (X/V) and delete (Z).
+The CSV **description** is composed exactly as the export tool writes it —
+`DESC1A DESC1B +LOCATION-DEVICE [DRW]` (drawing code = after the last `_`) — automatically on every
+CSV create and CSV content update, and on demand via E. A queued integrate shows the record it will
+create across the row's CSV block.
 
-**Apply** — *IO Bridge: apply batch* groups the included pending actions per target and applies each
-with a **per-action three-way check**: the file's current value must still equal the action's old
-value, or that action flags Conflict and the rest proceed. CSVs are patched headlessly and written
-only after `VerifyRoundTrip` passes and the file is confirmed unchanged since reading (atomic write,
-`.bak` kept); a CSV open in the delimited-file workspace is skipped ("close it there first"). The
-IO-list workbook is patched via COM — rows located by the build-time position re-verified, then
-`WorksheetFunction.MATCH` on the exact Bit text with a COUNTIF uniqueness check (never a whole-sheet
-`Find`, which skips filter-hidden rows). If the IO list was already open in Excel it is patched live
-and you are **asked** before saving; declining leaves the actions pending. Statuses flip only after a
-write actually happened, and the workspace rebuilds afterwards so the sheets show the new reality.
-*IO Bridge: clear history* drops Applied rows from the queue.
+**Expanded view** — for a multi-mnemonic point: a temporary `_Expand` scratchpad, matched pairs first
+(IO mnemonic column split per constituent), then IO-only, then CSV-only lines. Edit it freely, then
+*row actions* there offers the reconciliations, reading the sheet AS IT STANDS: **M** merge the
+sheet's CSV names into the IO-list mnemonic cell, **U** make the CSV match the sheet (delete vanished
+records, append new ones cloned from a sibling), **A** update the IO address from the CSV side.
+
+**The queue** — `_Queue` lists actions in order, Include first (double-click ☑/☐, typed x/1 count
+too; unchecked = skipped but kept). Repeated edits supersede but keep the **first** old value — the
+three-way base. Everything persists in `<io-list>.iobridge.json` (atomic, `.bak`), written on every
+change; on rebuild each action **re-anchors**: file holds the old value → Pending (typed value
+re-shown), the new value → AppliedExternally, anything else → ConflictStale.
+
+**Apply** (*apply queued batch*) — per-action **three-way check**: the file's current value must still
+equal the action's old value or that action flags Conflict and the rest proceed. CSVs are patched
+headlessly and written only after `VerifyRoundTrip` passes and the file is confirmed unchanged since
+reading (atomic write, `.bak`; a nameless create payload is refused; a CSV open in the delimited
+workspace is skipped). The IO list is patched via COM — build-time row re-verified, then
+`WorksheetFunction.MATCH`/`COUNTIF` on the exact Bit text (never whole-sheet `Find`, which skips
+filter-hidden rows). An IO list already open in Excel is patched live and you are **asked** before
+saving; declining leaves the actions pending. Statuses flip only after a real write, the workspace
+rebuilds to show the new reality, and *clear history* drops Applied rows.
 
 To remove the whole feature: delete `src/ExcelPowerTools/Experimental/IoBridge`,
 `src/ExcelPowerTools.Core/Experimental/IoBridge`, `tests/ExcelPowerTools.Tests/Experimental/IoBridge`,
-the pane entries and the three `AddIn.cs` event lines.
+the pane entries, the ribbon group and the three `AddIn.cs` event lines.
 
 ## Project layout
 

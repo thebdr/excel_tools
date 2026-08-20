@@ -533,20 +533,21 @@ namespace ExcelPowerTools.Experimental.IoBridge
             SetIf(fields, csvMap.Node, line.Node);
             SetIf(fields, csvMap.Offset, line.Offset);
             SetIf(fields, csvMap.Bit, line.Bit);
+
+            // Description: what the user typed on the sheet wins; else the composed one, automatically.
             int descField = CsvCanonical.FieldIndex(csvMap, CsvCanonical.Description);
-            SetIf(fields, descField, line.Description);
+            if (descField >= 0)
+            {
+                string description = line.Description.Length > 0
+                    ? line.Description
+                    : IoBridgeRowActions.ComposeCsvDescription(map, row);
+                if (description.Length > 0) fields[descField] = description;
+            }
             return fields;
         }
 
-        private static string PromptType(bool isInput, BridgeRow row)
-        {
-            string[] options = isInput
-                ? new[] { "1 — digital input", "3 — edge/message input", "4 — word input", "7 — data input", "11 — bus diagnostic" }
-                : new[] { "2 — digital output", "4 — word output", "8 — data output" };
-            int pick = Dialogs.SelectOne(
-                "CSV Type for the new rows of " + row.Signal.Mnemonic + ":", options, "Update CSV from sheet");
-            return pick < 0 ? null : options[pick].Split(' ')[0];
-        }
+        private static string PromptType(bool isInput, BridgeRow row) =>
+            IoBridgeRowActions.PromptCsvType(isInput, "the new rows of " + row.Signal.Mnemonic);
 
         private static void SetIf(string[] fields, int index, string value)
         {

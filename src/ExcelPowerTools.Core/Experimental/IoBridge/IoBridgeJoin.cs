@@ -86,6 +86,48 @@ namespace ExcelPowerTools.Core.Experimental.IoBridge
         }
     }
 
+    /// <summary>
+    /// Composes the plant-CSV description the way the export tool writes it:
+    /// "DESC1A DESC1B +LOCATION-DEVICE [DRW]" — e.g.
+    /// "CIRCUIT BREAKER TRIPPED POWER SUPPLY COOLING FAN +MS1.CC1-F22001 [Q0001]".
+    /// Location and Device concatenate directly; the bracket holds the drawing name with its project
+    /// prefix stripped ("8FVZ_Q0001" → "Q0001"). Empty pieces drop out cleanly.
+    /// </summary>
+    public static class CsvDescription
+    {
+        public static string Compose(string desc1a, string desc1b, string location, string device, string drawingName)
+        {
+            var pieces = new List<string>();
+
+            string text = JoinWords(desc1a, desc1b);
+            if (text.Length > 0) pieces.Add(text);
+
+            string locDev = (location ?? "").Trim() + (device ?? "").Trim();
+            if (locDev.Length > 0) pieces.Add(locDev);
+
+            string drawing = ShortDrawing(drawingName);
+            if (drawing.Length > 0) pieces.Add("[" + drawing + "]");
+
+            return string.Join(" ", pieces);
+        }
+
+        /// <summary>The drawing code the CSV brackets: everything after the LAST underscore.</summary>
+        public static string ShortDrawing(string drawingName)
+        {
+            string name = (drawingName ?? "").Trim();
+            if (name.Length == 0) return "";
+            int underscore = name.LastIndexOf('_');
+            return underscore >= 0 && underscore < name.Length - 1 ? name.Substring(underscore + 1) : name;
+        }
+
+        private static string JoinWords(string a, string b)
+        {
+            a = (a ?? "").Trim();
+            b = (b ?? "").Trim();
+            return a.Length == 0 ? b : b.Length == 0 ? a : a + " " + b;
+        }
+    }
+
     /// <summary>The unified CSV display block: one column set covering both export schemas.</summary>
     public static class CsvCanonical
     {
@@ -362,8 +404,11 @@ namespace ExcelPowerTools.Core.Experimental.IoBridge
         {
             if (recordIdxs == null || recordIdxs.Count == 0)
             {
-                // A signal the CSV should carry but does not — the integration candidate.
-                if (row.Kind == BridgeRowKind.Signal) row.MatchVerdict = "missing";
+                // A point the CSV should carry but does not — the integration candidate. Module rows
+                // count too: a named BUS module without its type-11 record is a real gap, not a match.
+                if (row.Kind == BridgeRowKind.Signal ||
+                    (row.Kind == BridgeRowKind.Module && row.Signal.Mnemonic.Trim().Length > 0))
+                    row.MatchVerdict = "missing";
                 return;
             }
 
@@ -459,6 +504,14 @@ namespace ExcelPowerTools.Core.Experimental.IoBridge
 
             string byName = row.Signal.MnemonicIdentityKey();
             if (byName.Length > 0 && !model.SignalIndex.ContainsKey(byName)) model.SignalIndex[byName] = row;
+
+            // Each individual mnemonic also aliases the row, so a per-record action (identified by ONE
+            // name of a multi-name point) still finds its spine row for highlighting and re-anchoring.
+            foreach (string part in IoListLogic.MnemonicKeys(row.Signal.Mnemonic))
+            {
+                string alias = row.Signal.CardKey + "~" + part;
+                if (!model.SignalIndex.ContainsKey(alias)) model.SignalIndex[alias] = row;
+            }
         }
 
         private static BridgeSheetModel FindSheetByCard(BridgeWorkspaceModel model, string board)

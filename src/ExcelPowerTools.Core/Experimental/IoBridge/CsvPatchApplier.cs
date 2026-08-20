@@ -148,6 +148,15 @@ namespace ExcelPowerTools.Core.Experimental.IoBridge
                         outcome.Note = "the action carries no row payload";
                         return outcome;
                     }
+                    // A record without a signal name is garbage in the plant CSV — refuse it here so
+                    // NO caller can ever append one, whatever went wrong upstream.
+                    if (map.Name >= action.RowFields.Length ||
+                        action.RowFields[map.Name] == null || action.RowFields[map.Name].Trim().Length == 0)
+                    {
+                        outcome.Outcome = BridgeActionStatus.Conflict;
+                        outcome.Note = "the payload carries no signal name — refused";
+                        return outcome;
+                    }
 
                     doc.Records.Add(CsvRecord.Data((string[])action.RowFields.Clone()));
                     result.AnyMutation = true;

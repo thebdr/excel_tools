@@ -16,6 +16,11 @@
     <RunExcelDnaPack>true</RunExcelDnaPack>
     <!-- net48 has no .deps.json for Excel-DNA to inspect, so name managed dependencies explicitly. -->
     <ExcelAddInInclude>DocumentFormat.OpenXml.dll;DocumentFormat.OpenXml.Framework.dll</ExcelAddInInclude>
+    <!-- Core sources are COMPILED INTO this assembly (see the Compile Include below), so without
+         explicit exports every public static Core helper auto-registers as a stray UDF — which is
+         how SmartFill.Compose and CsvDescription.Compose collided by bare method name. Only
+         [ExcelFunction]/[ExcelCommand] methods are meant to be visible to Excel. -->
+    <ExcelAddInExplicitExports>true</ExcelAddInExplicitExports>
   </PropertyGroup>
 
   <ItemGroup>

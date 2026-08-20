@@ -151,7 +151,11 @@ namespace ExcelPowerTools.Experimental.IoBridge
                     },
                 });
 
-            var integrable = rows.FindAll(r => r.Kind == BridgeRowKind.Signal && r.Csv == null);
+            // Empty-mnemonic points are unused spares — integrating them would append nameless lines.
+            // Bus modules integrate too (auto-typed 11, no prompt).
+            var integrable = rows.FindAll(r =>
+                (r.Kind == BridgeRowKind.Signal || r.Kind == BridgeRowKind.Module) &&
+                r.Csv == null && r.Signal.Mnemonic.Trim().Length > 0);
             if (integrable.Count > 0)
                 choices.Add(new Choice
                 {
@@ -215,12 +219,20 @@ namespace ExcelPowerTools.Experimental.IoBridge
                 });
         }
 
-        /// <summary>Integrates many rows: the CSV Type is asked ONCE per direction, then applied to all.</summary>
+        /// <summary>
+        /// Integrates many rows: bus modules go straight in as type 11; signals ask the CSV Type ONCE
+        /// per direction and apply it to all of that direction.
+        /// </summary>
         private static void QueueIntegrateMany(IoBridgeSession session, BridgeSheetMap map, List<BridgeRow> rows)
         {
             var byDirection = new Dictionary<char, List<BridgeRow>>();
             foreach (BridgeRow row in rows)
             {
+                if (row.Kind == BridgeRowKind.Module)
+                {
+                    QueueIntegrate(session, map, row, "11");
+                    continue;
+                }
                 if (!CoreIoListLogic.TryParseAddress(row.RawBitText, out char dir, out _, out _, out _)) continue;
                 if (!byDirection.TryGetValue(dir, out List<BridgeRow> list)) byDirection[dir] = list = new List<BridgeRow>();
                 list.Add(row);
@@ -262,21 +274,31 @@ namespace ExcelPowerTools.Experimental.IoBridge
                 AddLinkedPair(choices, session, map, row, LinkedField.NormalCondition, "normal condition", ioSideOnly: true);
             }
 
-            if (isSpine && !hasCsv && row.Kind == BridgeRowKind.Signal)
-                choices.Add(new Choice
-                {
-                    Label = KeyIntegrate + " — Integrate this signal into the CSV (create the record)",
-                    Perform = () =>
+            if (isSpine && !hasCsv && row.Signal.Mnemonic.Trim().Length > 0)
+            {
+                if (row.Kind == BridgeRowKind.Signal)
+                    choices.Add(new Choice
                     {
-                        if (!CoreIoListLogic.TryParseAddress(row.RawBitText, out char dir, out _, out _, out _))
+                        Label = KeyIntegrate + " — Integrate this signal into the CSV (create the record)",
+                        Perform = () =>
                         {
-                            Dialogs.Info("This row's address cannot be parsed — nothing to integrate.");
-                            return;
-                        }
-                        string type = PromptCsvType(dir == 'I', row.Signal.Mnemonic + " (" + row.Signal.Address + ")");
-                        if (type != null) QueueIntegrate(session, map, row, type);
-                    },
-                });
+                            if (!CoreIoListLogic.TryParseAddress(row.RawBitText, out char dir, out _, out _, out _))
+                            {
+                                Dialogs.Info("This row's address cannot be parsed — nothing to integrate.");
+                                return;
+                            }
+                            string type = PromptCsvType(dir == 'I', row.Signal.Mnemonic + " (" + row.Signal.Address + ")");
+                            if (type != null) QueueIntegrate(session, map, row, type);
+                        },
+                    });
+                else if (row.Kind == BridgeRowKind.Module)
+                    choices.Add(new Choice
+                    {
+                        // A BUS module IS type 11 by definition — no prompt.
+                        Label = KeyIntegrate + " — Integrate this bus module into the CSV (type 11)",
+                        Perform = () => QueueIntegrate(session, map, row, "11"),
+                    });
+            }
 
             if (singleCsv)
             {
@@ -354,7 +376,7 @@ namespace ExcelPowerTools.Experimental.IoBridge
                     string ioValue = IoValue(row, ioCol);
                     string csvValue = row.CsvValues[CsvCanonical.Name];
 
-                    values = MakeSetPair(session, row, pair,
+                    values = MakeSetPair(session, map, row, pair,
                         csvFieldCanonical: CsvCanonical.Name, csvOld: csvValue,
                         csvNew: CoreIoListLogic.StripBusPrefix(ioValue),
                         ioFieldHeader: "mnemonic", ioOld: ioValue, ioNew: csvValue);
@@ -367,7 +389,7 @@ namespace ExcelPowerTools.Experimental.IoBridge
                     string ioValue = IoValue(row, ioCol);
                     string csvValue = row.CsvValues[CsvCanonical.Logic];
 
-                    values = MakeSetPair(session, row, pair,
+                    values = MakeSetPair(session, map, row, pair,
                         csvFieldCanonical: CsvCanonical.Logic, csvOld: csvValue, csvNew: ioValue,
                         ioFieldHeader: "normalcondition", ioOld: ioValue, ioNew: csvValue);
                     return true;
@@ -399,6 +421,7 @@ namespace ExcelPowerTools.Experimental.IoBridge
                         QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Node, csvNode, n);
                         QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Offset, csvOff, o);
                         QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Bit, csvBit, b);
+                        AutoQueueDescription(session, map, row);
                     };
                     result.QueueIo = () =>
                         QueueIoSet(session, row, LinkedField.Address, "bit", ioAddress, result.IoNew);
@@ -410,17 +433,33 @@ namespace ExcelPowerTools.Experimental.IoBridge
             }
         }
 
+        /// <summary>
+        /// The CSV description composed EXACTLY as the export tool writes it, from this row's IO-list
+        /// fields: language-1 parts + Location&amp;Device + [drawing code]. "" when the row carries no
+        /// IO side or the sheet lacks the columns.
+        /// </summary>
+        internal static string ComposeCsvDescription(BridgeSheetMap map, BridgeRow row)
+        {
+            if (row == null || row.Kind == BridgeRowKind.CsvOnly) return "";
+            string[] headers = map.Model.IoHeaders;
+
+            int part1 = CoreIoListLogic.FindColumn(headers, "Description language 1 (1° part", "description english language");
+            int part2 = CoreIoListLogic.FindColumn(headers, "Description language 1 (2° part");
+            int location = CoreIoListLogic.FindColumn(headers, "location");
+            int device = CoreIoListLogic.FindColumn(headers, "device");
+            int drawing = CoreIoListLogic.FindColumn(headers, "drawing name", "drawing");
+
+            return CsvDescription.Compose(
+                IoValue(row, part1), IoValue(row, part2),
+                IoValue(row, location), IoValue(row, device), IoValue(row, drawing));
+        }
+
         private static void AddDescriptionToCsv(
             List<Choice> choices, IoBridgeSession session, BridgeSheetMap map, BridgeRow row)
         {
             // Description flows IO → CSV only (the CSV never feeds the electrical descriptions).
-            int part1 = IoColumnByFragments(map, session, "Description language 1 (1Â° part", "description english language");
-            if (part1 < 0) return;
-            int part2 = IoColumnByFragments(map, session, "Description language 1 (2Â° part");
-
-            string description = IoValue(row, part1).Trim();
-            string extra = part2 >= 0 ? IoValue(row, part2).Trim() : "";
-            if (extra.Length > 0) description = description.Length > 0 ? description + " " + extra : extra;
+            string description = ComposeCsvDescription(map, row);
+            if (description.Length == 0) return;
 
             string csvValue = row.CsvValues[CsvCanonical.Description];
             if (description == csvValue) return;
@@ -432,10 +471,25 @@ namespace ExcelPowerTools.Experimental.IoBridge
             });
         }
 
+        /// <summary>
+        /// Every CSV content update refreshes the description alongside — queued automatically so the
+        /// composed text follows whatever field just changed.
+        /// </summary>
+        private static void AutoQueueDescription(IoBridgeSession session, BridgeSheetMap map, BridgeRow row)
+        {
+            if (row?.Csv == null || row.Csv.IsMulti) return;
+            string description = ComposeCsvDescription(map, row);
+            if (description.Length == 0) return;
+
+            string csvValue = row.CsvValues[CsvCanonical.Description];
+            if (description == csvValue) return;
+            QueueCsvSet(session, row, LinkedField.Description, CsvCanonical.Description, csvValue, description);
+        }
+
         // ---- queue helpers ---------------------------------------------------------------------------
 
         private static LinkedValues MakeSetPair(
-            IoBridgeSession session, BridgeRow row, LinkedField pair,
+            IoBridgeSession session, BridgeSheetMap map, BridgeRow row, LinkedField pair,
             int csvFieldCanonical, string csvOld, string csvNew,
             string ioFieldHeader, string ioOld, string ioNew)
         {
@@ -445,7 +499,11 @@ namespace ExcelPowerTools.Experimental.IoBridge
                 CsvNew = csvNew,
                 IoOld = ioOld,
                 IoNew = ioNew,
-                QueueCsv = () => QueueCsvSet(session, row, pair, csvFieldCanonical, csvOld, csvNew),
+                QueueCsv = () =>
+                {
+                    QueueCsvSet(session, row, pair, csvFieldCanonical, csvOld, csvNew);
+                    AutoQueueDescription(session, map, row);   // a CSV row update carries its description
+                },
                 QueueIo = () => QueueIoSet(session, row, pair, ioFieldHeader, ioOld, ioNew),
             };
         }
@@ -510,22 +568,60 @@ namespace ExcelPowerTools.Experimental.IoBridge
             });
         }
 
-        /// <summary>The CSV Type is not derivable from the IO list — one picker, shared by all callers.</summary>
-        private static string PromptCsvType(bool isInput, string subject)
+        /// <summary>
+        /// The CSV Type is not derivable from the IO list — one picker, shared by all callers.
+        /// Taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI · 8 DEO · 9 VAI · 10 VAO · 11 BUS.
+        /// </summary>
+        internal static string PromptCsvType(bool isInput, string subject)
         {
             string[] typeOptions = isInput
-                ? new[] { "1 — digital input", "3 — edge/message input", "4 — word input", "7 — data input", "11 — bus diagnostic" }
-                : new[] { "2 — digital output", "4 — word output", "8 — data output" };
+                ? new[]
+                {
+                    "1 — DI (digital input)",
+                    "3 — AI (analog input)",
+                    "5 — VDI (virtual digital input)",
+                    "7 — DEI (data exchange in)",
+                    "9 — VAI (virtual analog input)",
+                    "11 — BUS (remote node state)",
+                }
+                : new[]
+                {
+                    "2 — DO (digital output)",
+                    "4 — AO (analog output)",
+                    "6 — VDO (virtual digital output)",
+                    "8 — DEO (data exchange out)",
+                    "10 — VAO (virtual analog output)",
+                };
             int pick = Dialogs.SelectOne("CSV Type for " + subject + ":", typeOptions, "Integrate into CSV");
             return pick < 0 ? null : typeOptions[pick].Split(' ')[0];
         }
 
         private static void QueueIntegrate(IoBridgeSession session, BridgeSheetMap map, BridgeRow row, string type)
         {
-            if (!CoreIoListLogic.TryParseAddress(row.RawBitText, out char dir, out string node, out string off, out string bit))
-                return;
+            string node, off, bit;
+            bool isInput;
+            if (row.Kind == BridgeRowKind.Module)
+            {
+                // A bus module: the node IS the address ("#236"); type-11 records live in Inputs.
+                if (!row.Signal.Address.StartsWith("#", StringComparison.Ordinal)) return;
+                node = row.Signal.Address.Substring(1);
+                off = "0";
+                bit = "0";
+                isInput = true;
+            }
+            else
+            {
+                if (!CoreIoListLogic.TryParseAddress(row.RawBitText, out char dir, out node, out off, out bit))
+                    return;
+                isInput = dir == 'I';
+            }
 
-            bool isInput = dir == 'I';
+            // The CSV never carries the IO list's BUS_ prefix on type-11 signals.
+            string name = type == "11"
+                ? CoreIoListLogic.StripBusPrefix(row.Signal.Mnemonic).Trim()
+                : row.Signal.Mnemonic.Trim();
+            if (name.Length == 0) return;   // an unused spare — never append a nameless CSV line
+
             BridgeTarget target = isInput ? BridgeTarget.InputsCsv : BridgeTarget.OutputsCsv;
             CsvColumnsMap csvMap = isInput ? session.Model.InputsMap : session.Model.OutputsMap;
 
@@ -536,7 +632,7 @@ namespace ExcelPowerTools.Experimental.IoBridge
             var fields = new string[csvMap.Headers.Count];
             for (int i = 0; i < fields.Length; i++) fields[i] = "0";
             fields[0] = "@";
-            fields[csvMap.Name] = CoreIoListLogic.StripBusPrefix(row.Signal.Mnemonic);
+            fields[csvMap.Name] = name;
             if (csvMap.Type >= 0) fields[csvMap.Type] = type;
             int logicField = CsvCanonical.FieldIndex(csvMap, CsvCanonical.Logic);
             if (logicField >= 0) fields[logicField] = logic;
@@ -544,12 +640,9 @@ namespace ExcelPowerTools.Experimental.IoBridge
             fields[csvMap.Offset] = off;
             fields[csvMap.Bit] = bit;
             fields[csvMap.Board] = SheetCardOf(session, map);
+            // A created row carries the FULL composed description automatically.
             int descField = CsvCanonical.FieldIndex(csvMap, CsvCanonical.Description);
-            if (descField >= 0)
-            {
-                int part1 = IoColumnByFragments(map, session, "Description language 1 (1Â° part", "description english language");
-                fields[descField] = part1 >= 0 ? IoValue(row, part1).Trim() : "";
-            }
+            if (descField >= 0) fields[descField] = ComposeCsvDescription(map, row);
 
             session.Queue.Record(new BridgeAction
             {
@@ -579,8 +672,6 @@ namespace ExcelPowerTools.Experimental.IoBridge
             return -1;
         }
 
-        private static int IoColumnByFragments(BridgeSheetMap map, IoBridgeSession session, params string[] fragments) =>
-            CoreIoListLogic.FindColumn(map.Model.IoHeaders, fragments);
 
         private static string Shorten(string value) =>
             value == null ? "" : value.Length <= 24 ? value : value.Substring(0, 24) + "…";

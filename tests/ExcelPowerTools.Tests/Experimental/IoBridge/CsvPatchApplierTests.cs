@@ -229,6 +229,26 @@ namespace ExcelPowerTools.Tests.Experimental.IoBridge
         }
 
         [Fact]
+        public void A_create_payload_without_a_signal_name_is_refused()
+        {
+            CsvDocument doc = Load();
+            int before = doc.Records.Count;
+            var nameless = new BridgeAction
+            {
+                Kind = BridgeActionKind.CreateCsvRow,
+                Target = BridgeTarget.InputsCsv,
+                Signal = At("I.70.0.0", ""),
+                RowFields = new[] { "@", "  ", "1", "0", "0", "0", "0", "0", "0", "0", "0", "70", "0", "0", "0", "1", "" },
+            };
+
+            CsvActionOutcome outcome = Apply(doc, nameless).Outcomes.Single();
+
+            Assert.Equal(BridgeActionStatus.Conflict, outcome.Outcome);
+            Assert.Contains("no signal name", outcome.Note);
+            Assert.Equal(before, doc.Records.Count);   // nothing appended
+        }
+
+        [Fact]
         public void Delete_removes_and_later_actions_still_resolve()
         {
             CsvDocument doc = Load();

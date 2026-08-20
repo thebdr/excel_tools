@@ -119,9 +119,12 @@ namespace ExcelPowerTools.Experimental.IoBridge
                 ApplyStatusFormats(sheet, actions.Count);
             }
 
+            // AutoFit ONLY the used columns — sheet.Columns.AutoFit() walks all 16,384 and takes
+            // ~10 seconds, which this refresh pays on EVERY queued edit.
             try
             {
-                sheet.Columns.AutoFit();
+                int lastRow = HeaderRow + Math.Max(1, actions.Count);
+                sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(lastRow, Headers.Length)).Columns.AutoFit();
                 sheet.Columns(IncludeColumn).ColumnWidth = 8.5;
             }
             catch { }

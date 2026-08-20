@@ -631,16 +631,17 @@ namespace ExcelPowerTools.Experimental.IoBridge
 
         /// <summary>
         /// Paints action-state highlights DIRECTLY on the affected cells (pending yellow, stale
-        /// conflict red, externally-applied blue) and re-displays a pending action's typed value, so
-        /// queued work survives a rebuild visibly. Direct painting — not conditional formatting — so
-        /// the same helper gives immediate feedback when an action is queued or unqueued live.
+        /// conflict red, externally-applied blue) and re-displays a pending action's values, so queued
+        /// work survives a rebuild visibly. SetField anchors on its own column; row-level actions
+        /// (integrate, disable/enable, delete) anchor on the CSV Name cell, and a pending INTEGRATE
+        /// additionally shows the record it will create across the CSV block. Direct painting — not
+        /// conditional formatting — so the same helper gives immediate live feedback.
         /// </summary>
         internal static void RenderActionHighlights(dynamic sheet, BridgeSheetMap map, IoBridgeSession session)
         {
             foreach (BridgeAction action in session.Queue.Actions)
             {
                 if (!action.IsOpen && action.Status != BridgeActionStatus.AppliedExternally) continue;
-                if (action.Kind != BridgeActionKind.SetField) continue;
 
                 BridgeRow row = session.Model.FindByIdentity(action.Signal);
                 if (row == null) continue;
@@ -648,12 +649,47 @@ namespace ExcelPowerTools.Experimental.IoBridge
                 int worksheetRow = WorksheetRowOf(map, row);
                 if (worksheetRow < 0) continue;
 
-                int layoutCol = LayoutColumnFor(session, map, row, action);
+                if (action.Kind == BridgeActionKind.SetField)
+                {
+                    int layoutCol = LayoutColumnFor(session, map, row, action);
+                    if (layoutCol < 0) continue;
+
+                    if (action.Status == BridgeActionStatus.Pending)
+                        sheet.Cells(worksheetRow, session.WorksheetColumnOf(layoutCol)).Value = action.NewValue;
+                    PaintActionCell(sheet, session, map, worksheetRow, layoutCol, action.Status);
+                    continue;
+                }
+
+                // Row-level CSV actions: the Name cell carries the evidence.
+                int nameCol = LayoutIndexOf(session, CsvCanonical.LayoutKey(CsvCanonical.Name));
+                if (nameCol < 0) continue;
+
+                if (action.Kind == BridgeActionKind.CreateCsvRow &&
+                    action.Status == BridgeActionStatus.Pending && action.RowFields != null)
+                    DisplayPendingRecord(sheet, session, worksheetRow, action);
+
+                PaintActionCell(sheet, session, map, worksheetRow, nameCol, action.Status);
+            }
+        }
+
+        /// <summary>The record a pending integrate will create, shown across the row's CSV block.</summary>
+        private static void DisplayPendingRecord(
+            dynamic sheet, IoBridgeSession session, int worksheetRow, BridgeAction action)
+        {
+            CsvColumnsMap map = action.Target == BridgeTarget.InputsCsv
+                ? session.Model.InputsMap
+                : session.Model.OutputsMap;
+            if (map == null) return;
+
+            for (int canonical = 0; canonical < CsvCanonical.Labels.Length; canonical++)
+            {
+                int layoutCol = LayoutIndexOf(session, CsvCanonical.LayoutKey(canonical));
                 if (layoutCol < 0) continue;
 
-                if (action.Status == BridgeActionStatus.Pending)
-                    sheet.Cells(worksheetRow, session.WorksheetColumnOf(layoutCol)).Value = action.NewValue;
-                PaintActionCell(sheet, session, map, worksheetRow, layoutCol, action.Status);
+                int field = CsvCanonical.FieldIndex(map, canonical);
+                if (field < 0 || field >= action.RowFields.Length || action.RowFields[field] == null) continue;
+
+                sheet.Cells(worksheetRow, session.WorksheetColumnOf(layoutCol)).Value = action.RowFields[field];
             }
         }
 
@@ -866,7 +902,12 @@ namespace ExcelPowerTools.Experimental.IoBridge
                 "+/- buttons. Run \"IO Bridge: column config\" to apply.";
             sheet.Cells(noteRow, 2).Font.Italic = true;
 
-            try { sheet.Columns.AutoFit(); } catch { }
+            // Used columns only — a whole-sheet Columns.AutoFit walks all 16,384 and costs seconds.
+            try
+            {
+                sheet.Range(sheet.Cells(1, 1), sheet.Cells(rows.Count, data.GetLength(1))).Columns.AutoFit();
+            }
+            catch { }
         }
 
         internal static void WriteBlock(dynamic sheet, int firstRow, int firstCol, object[,] data)

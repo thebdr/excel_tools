@@ -48,6 +48,42 @@ namespace ExcelPowerTools.Tests.Experimental.IoBridge
                 CsvFile.Load(Encoding.UTF8.GetBytes(InputsText)),
                 CsvFile.Load(Encoding.UTF8.GetBytes(OutputsText)));
 
+        [Theory]
+        // The user-confirmed reference example, piece by piece.
+        [InlineData("CIRCUIT BREAKER TRIPPED", "POWER SUPPLY COOLING FAN", "+MS1.CC1", "-F22001", "8FVZ_Q0001",
+            "CIRCUIT BREAKER TRIPPED POWER SUPPLY COOLING FAN +MS1.CC1-F22001 [Q0001]")]
+        // Missing variable part.
+        [InlineData("OVERTEMPERATURE ALARM", "", "+MS1.CC1", "-S70301", "8FVZ_Q0001",
+            "OVERTEMPERATURE ALARM +MS1.CC1-S70301 [Q0001]")]
+        // No drawing.
+        [InlineData("BLADE DETECTION ALARM", "", "+PC1.CC1", "-F30201", "",
+            "BLADE DETECTION ALARM +PC1.CC1-F30201")]
+        // No location/device.
+        [InlineData("PROFINET CARD", "", "", "", "8xxx_Qxxxx",
+            "PROFINET CARD [Qxxxx]")]
+        // Everything empty stays empty.
+        [InlineData("", "", "", "", "", "")]
+        // Untrimmed inputs and a drawing without a prefix.
+        [InlineData(" A ", " B ", " +L1 ", " -D1 ", " P1006 ",
+            "A B +L1-D1 [P1006]")]
+        public void Csv_description_composes_as_the_export_tool_writes_it(
+            string desc1a, string desc1b, string location, string device, string drawing, string expected)
+        {
+            Assert.Equal(expected, CsvDescription.Compose(desc1a, desc1b, location, device, drawing));
+        }
+
+        [Theory]
+        [InlineData("8FVZ_Q0001", "Q0001")]
+        [InlineData("8xxx_C0002", "C0002")]
+        [InlineData("A_B_C123", "C123")]       // the LAST underscore splits
+        [InlineData("P1006", "P1006")]         // no prefix — used whole
+        [InlineData("TRAILING_", "TRAILING_")] // nothing after the underscore — used whole
+        [InlineData("", "")]
+        public void Drawing_code_is_the_part_after_the_last_underscore(string drawingName, string expected)
+        {
+            Assert.Equal(expected, CsvDescription.ShortDrawing(drawingName));
+        }
+
         [Fact]
         public void Header_row_is_found_by_bit_plus_mnemonic()
         {
@@ -102,6 +138,28 @@ namespace ExcelPowerTools.Tests.Experimental.IoBridge
         }
 
         [Fact]
+        public void A_named_module_without_its_type11_record_reads_missing_not_matching()
+        {
+            var card = new CardSheetGrid
+            {
+                SheetName = "R1.S1.C1",
+                AllRows = new List<string[]>
+                {
+                    new[] { "ID", "Bit", "Normal condition", "Mnemonic" },
+                    new[] { "999", "", "", "BUS_CABINETAL09999" },   // no CSV record at node 999
+                },
+            };
+            BridgeRow module = IoBridgeJoin.Build(new[] { card },
+                    CsvFile.Load(Encoding.UTF8.GetBytes(InputsText)),
+                    CsvFile.Load(Encoding.UTF8.GetBytes(OutputsText)))
+                .Sheets.Single().SpineRows.Single();
+
+            Assert.Equal(BridgeRowKind.Module, module.Kind);
+            Assert.Null(module.Csv);
+            Assert.Equal("missing", module.MatchVerdict);   // a real gap — must not fade green
+        }
+
+        [Fact]
         public void A_spine_signal_without_a_csv_row_reads_missing()
         {
             BridgeRow missing = Build().Sheets.Single().SpineRows[3];
@@ -136,6 +194,30 @@ namespace ExcelPowerTools.Tests.Experimental.IoBridge
 
             // OTHER_CARD (board 9) belongs to no selected sheet; the '!' include row is never a signal.
             Assert.DoesNotContain(sheet.CsvOnlyRows, r => r.Signal.Mnemonic == "OTHER_CARD");
+        }
+
+        [Fact]
+        public void One_name_of_a_multi_name_point_still_resolves_to_its_row()
+        {
+            // Per-record actions (expand-sheet deletes/creates) identify by a SINGLE name; the index
+            // must alias each part of a multi-mnemonic point to the same spine row.
+            var card = new CardSheetGrid
+            {
+                SheetName = "R1.S1.C1",
+                AllRows = new List<string[]>
+                {
+                    new[] { "ID", "Bit", "Normal condition", "Mnemonic" },
+                    new[] { "", "I.60.0.0", "1", "AUTOM/MANUAL" },
+                },
+            };
+            var model = IoBridgeJoin.Build(new[] { card },
+                CsvFile.Load(Encoding.UTF8.GetBytes(InputsText)),
+                CsvFile.Load(Encoding.UTF8.GetBytes(OutputsText)));
+
+            BridgeRow byPart = model.FindByIdentity(
+                new SignalRef { CardKey = "R1.S1.C1", Address = "", Mnemonic = "MANUAL" })!;
+            Assert.NotNull(byPart);
+            Assert.Equal("AUTOM/MANUAL", byPart.Signal.Mnemonic);
         }
 
         [Fact]
