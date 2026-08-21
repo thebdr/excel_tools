@@ -20,37 +20,61 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         // 1-based worksheet columns.
         internal const int ColCard = 1, ColRow = 2, ColMnemonic = 3, ColAddress = 4;
         internal const int ColSheet = 5, ColCoordinate = 6, ColSwpRow = 7;
-        internal const int ColVerdict = 8, ColCsv = 9, ColBusfield = 10, ColAlarms = 11;
-        internal const int ColExportNow = 12, ColExportNew = 13;
-        internal const int ColAddrNow = 14, ColAddrNew = 15;
-        internal const int ColDeviceNow = 16, ColDeviceNew = 17;
-        internal const int ColTsNow = 18, ColTsNew = 19;
-        internal const int ColDesc1Now = 20, ColDesc1New = 21;
-        internal const int ColDesc2Now = 22, ColDesc2New = 23;
-        internal const int ColFormulas = 24;
-        internal const int ColSkipLabel = 25, ColDbIndex = 26, ColForceIds = 27;
-        internal const int ColDesc1Override = 28, ColDesc2Override = 29;
-        internal const int ColFuSwp = 30, ColFuIo = 31, ColLocSwp = 32, ColLocIo = 33;
-        internal const int ColumnCount = 33;
+        internal const int ColVerdict = 8, ColCsv = 9, ColBusfield = 10, ColAlarms = 11, ColBusExt = 12;
+        internal const int ColExportNow = 13, ColExportNew = 14;
+        internal const int ColAddrNow = 15, ColAddrNew = 16;
+        internal const int ColFu = 17, ColLoc = 18;            // IOL / SWP identity, one column each
+        internal const int ColDeviceNow = 19, ColDeviceNew = 20;
+        internal const int ColTsNow = 21, ColTsNew = 22;
+        internal const int ColDesc1Now = 23, ColDesc1New = 24;
+        internal const int ColDesc2Now = 25, ColDesc2New = 26;
+        internal const int ColFormulas = 27;
+        internal const int ColSkipLabel = 28, ColDbIndex = 29, ColForceIds = 30, ColFldMode = 31;
+        internal const int ColTrustConfig = 32;
+        internal const int ColDesc1Override = 33, ColDesc2Override = 34;
+        internal const int ColumnCount = 34;
 
         internal const string CheckedGlyph = "☑";
 
         private static readonly string[] Headers =
         {
             "Card", "Row", "Mnemonic", "Address", "SWP sheet", "Coordinate", "SWP row",
-            "Verdict", "Plant_Inputs", "Busfield", "Alarm strings",
-            "Export", "Export ▸", "I/O addr", "I/O addr ▸", "Device", "Device ▸",
-            "T.S. ref", "T.S. ref ▸", "Description 1", "Description 1 ▸",
+            "Verdict", "Plant_Inputs", "Busfield", "Alarm strings", "BUS ext. diag",
+            "Export", "Export ▸", "I/O addr", "I/O addr ▸", "FU (IOL / SWP)", "Loc (IOL / SWP)",
+            "Device", "Device ▸", "T.S. ref", "T.S. ref ▸", "Description 1", "Description 1 ▸",
             "Description 2", "Description 2 ▸", "Formulas",
-            "[Mismatch OK]", "[DB index]", "[Force IDs]", "[Desc 1 override]", "[Desc 2 override]",
-            "FU (SWP)", "FU (IO)", "Loc (SWP)", "Loc (IO)",
+            // ColFldMode's caption is computed at render time: it always names the OPPOSITE of the
+            // workspace default, because ticking it is what the cell does.
+            "[Mismatch OK]", "[DB index]", "[Force IDs]", "[Overwrite FLD]", "[Keep CONFIG text]",
+            "[Desc 1 override]", "[Desc 2 override]",
         };
 
+        /// <summary>
+        /// The FLD column's caption: ticking a row flips it AWAY from the workspace default, so the
+        /// header names the action the tick performs — [Overwrite FLD] under an append default,
+        /// [Append FLD] under an overwrite one.
+        /// </summary>
+        internal static string FldModeHeader(SwpMismatchMode workspaceDefault) =>
+            workspaceDefault == SwpMismatchMode.Overwrite ? "[Append FLD]" : "[Overwrite FLD]";
+
+        /// <summary>
+        /// The CONFIG-text column's caption, same opposite-of-the-default rule: under the normal
+        /// setting the bridge writes its composed text, so ticking KEEPS CONFIG's; under "never
+        /// overwrite CONFIG_PLANT descriptions" it is the IO text that a tick restores.
+        /// </summary>
+        internal static string TrustConfigHeader(bool workspaceDefault) =>
+            workspaceDefault ? "[Write IO text]" : "[Keep CONFIG text]";
+
         private static int Rgb(int r, int g, int b) => r | (g << 8) | (b << 16);
+
+        // Header colors say where a column's data comes from: the IO list (blue), one of the
+        // checked production files (lavender), the SWP (orange), the bridge's own overrides (olive).
         private static readonly int HeaderBlue = Rgb(180, 210, 240);
-        private static readonly int DoubleClickBlue = Rgb(0, 112, 192);
-        internal static readonly int SwpHeaderOrange = Rgb(250, 200, 140);   // the SWP side stands apart
+        internal static readonly int CheckHeaderLavender = Rgb(221, 211, 245);
+        internal static readonly int SwpHeaderOrange = Rgb(250, 200, 140);
         private static readonly int OverrideHeaderTint = Rgb(215, 228, 188);
+        private static readonly int DoubleClickBlue = Rgb(0, 112, 192);
+        private static readonly int MismatchTint = Rgb(253, 228, 200);    // FU/Loc cell whose two sides differ
         private static readonly int PendingYellow = Rgb(255, 235, 156);
         private static readonly int ConflictRed = Rgb(255, 199, 206);
         private static readonly int ExternalBlue = Rgb(221, 235, 247);
@@ -88,16 +112,22 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
             var headers = new object[1, ColumnCount];
             for (int c = 0; c < ColumnCount; c++) headers[0, c] = Headers[c];
+            headers[0, ColFldMode - 1] = FldModeHeader(session.Settings.MismatchMode);
+            headers[0, ColTrustConfig - 1] = TrustConfigHeader(session.Settings.TrustConfigPlant);
             dynamic headerRange = sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(HeaderRow, ColumnCount));
             headerRange.NumberFormat = "@";
             WriteBlock(sheet, HeaderRow, 1, headers);
-            headerRange.Interior.Color = HeaderBlue;
+            headerRange.Interior.Color = HeaderBlue;   // Card … Address: the IO list
             headerRange.Font.Bold = true;
-            // The SWP-related block wears light orange for a quick spot (the IO side stays blue).
-            sheet.Range(sheet.Cells(HeaderRow, ColSheet), sheet.Cells(HeaderRow, ColFormulas))
+            // Every other header wears the color of its source: the SWP (sheet, coordinate,
+            // row, verdict, the current/proposed cells, formulas), the checked production files
+            // (the four coherence verdicts), and the bridge's own override columns.
+            sheet.Range(sheet.Cells(HeaderRow, ColSheet), sheet.Cells(HeaderRow, ColVerdict))
                 .Interior.Color = SwpHeaderOrange;
-            sheet.Cells(HeaderRow, ColFuSwp).Interior.Color = SwpHeaderOrange;
-            sheet.Cells(HeaderRow, ColLocSwp).Interior.Color = SwpHeaderOrange;
+            sheet.Range(sheet.Cells(HeaderRow, ColCsv), sheet.Cells(HeaderRow, ColBusExt))
+                .Interior.Color = CheckHeaderLavender;
+            sheet.Range(sheet.Cells(HeaderRow, ColExportNow), sheet.Cells(HeaderRow, ColFormulas))
+                .Interior.Color = SwpHeaderOrange;
             sheet.Range(sheet.Cells(HeaderRow, ColSkipLabel), sheet.Cells(HeaderRow, ColDesc2Override))
                 .Interior.Color = OverrideHeaderTint;
 
@@ -113,10 +143,12 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             if (rows > 0)
             {
                 var overrides = session.OverridesByMnemonic();
+                var repairs = RepairsByTargetRow(session);
                 var data = new object[rows, ColumnCount];
                 for (int r = 0; r < rows; r++)
                 {
-                    FillRow(data, r, model.Rows[r], overrides);
+                    FillRow(data, r, model.Rows[r], overrides, repairs,
+                        session.Settings.MismatchMode, session.Settings.TrustConfigPlant);
                     session.ModelRowByWorksheetRow[FirstDataRow + r] = r;
                     session.WorksheetRowByModelRow[r] = FirstDataRow + r;
                 }
@@ -131,7 +163,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 PaintActionCells(sheet, session);
 
                 int last = FirstDataRow + rows - 1;
-                foreach (int column in new[] { ColRow, ColCoordinate, ColSwpRow, ColVerdict, ColTsNow, ColTsNew })
+                foreach (int column in new[] { ColRow, ColCoordinate, ColSwpRow, ColVerdict,
+                    ColCsv, ColBusfield, ColAlarms, ColBusExt, ColTsNow, ColTsNew })
                     MarkDoubleClickable(sheet.Range(
                         sheet.Cells(FirstDataRow, column), sheet.Cells(last, column)));
             }
@@ -142,14 +175,20 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
             try
             {
+                // Largest cell wins — no cap: the user kept re-autofitting the capped columns.
                 int lastRow = FirstDataRow + Math.Max(0, rows - 1);
                 sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(lastRow, ColumnCount)).Columns.AutoFit();
                 for (int c = 1; c <= ColumnCount; c++)
                 {
                     dynamic column = sheet.Columns(c);
                     double width = (double)column.ColumnWidth;
-                    if (width > 46) column.ColumnWidth = 46;
-                    else if (width < 6) column.ColumnWidth = 6;
+                    // AutoFit measures the caption but not the AutoFilter drop-down that sits over
+                    // its right end — a column whose header is its widest content lost the last
+                    // glyph ("T.S. ref ▸" showed without the ▸). Bold caption ≈ 1.15 units per
+                    // character, the button ≈ 3.
+                    double headerNeed = Headers[c - 1].Length * 1.15 + 3.0;
+                    double wanted = Math.Max(6.0, Math.Max(width, headerNeed));
+                    if (Math.Abs(wanted - width) > 0.1) column.ColumnWidth = wanted;
                 }
                 sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(lastRow, ColumnCount)).AutoFilter();
             }
@@ -170,18 +209,47 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             try { activeCell?.Select(); } catch { }
         }
 
+        /// <summary>
+        /// The formula REPAIRS (restored H/I references) are workbook-level edits, not spine-row
+        /// edits — indexed here by the SWP row they target so the Formulas column can show them
+        /// on the mnemonic that lives there. Header-level repairs have no spine row and stay on
+        /// the queue only.
+        /// </summary>
+        private static Dictionary<(string Sheet, int Row), List<SwpProposedEdit>> RepairsByTargetRow(SwpBridgeSession session)
+        {
+            var repairs = new Dictionary<(string Sheet, int Row), List<SwpProposedEdit>>();
+            if (session.Model?.Edits == null) return repairs;
+            foreach (SwpProposedEdit edit in session.Model.Edits)
+            {
+                if (edit.Field != SwpField.FormulaH && edit.Field != SwpField.FormulaI) continue;
+                var key = (edit.Sheet ?? "", edit.RowNumber);
+                if (!repairs.TryGetValue(key, out List<SwpProposedEdit> list))
+                    repairs[key] = list = new List<SwpProposedEdit>();
+                list.Add(edit);
+            }
+            return repairs;
+        }
+
+        private static (string Sheet, int Row) TargetOf(SwpSpineRow row) =>
+            row.Snapshot != null && row.Mapped != null && row.Mapped.Ok
+                ? (row.Mapped.Coordinate.SheetName ?? "", row.Snapshot.RowNumber)
+                : ("", -1);
+
         private static void FillRow(object[,] data, int r, SwpSpineRow row,
-            Dictionary<string, SwpRowOverride> overrides)
+            Dictionary<string, SwpRowOverride> overrides,
+            Dictionary<(string Sheet, int Row), List<SwpProposedEdit>> repairs,
+            SwpMismatchMode workspaceDefault, bool trustConfigDefault)
         {
             DiagnosticEntry e = row.Entry;
             data[r, ColCard - 1] = e.CardSheet;
             data[r, ColRow - 1] = e.SourceRow > 0 ? e.SourceRow.ToString() : "";
             data[r, ColMnemonic - 1] = e.Mnemonic;
-            data[r, ColAddress - 1] = e.IsBusModule ? "#" + e.Node : e.SwpAddress();
+            data[r, ColAddress - 1] = e.IsBusModule ? "#" + (e.AsiNode.Length > 0 ? e.AsiNode : e.Node) : e.SwpAddress();
             data[r, ColVerdict - 1] = VerdictLabel(row.Verdict);
             data[r, ColCsv - 1] = CsvLabel(row.CsvVerdict);
             data[r, ColBusfield - 1] = BusfieldLabel(row.BusfieldVerdict);
             data[r, ColAlarms - 1] = AlarmLabel(row.AlarmVerdict);
+            data[r, ColBusExt - 1] = BusExtLabel(row.BusExtVerdict);
 
             if (row.Mapped != null && row.Mapped.Ok)
             {
@@ -204,12 +272,12 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 data[r, ColTsNow - 1] = s.TsRefL;
                 data[r, ColDesc1Now - 1] = s.Desc1T;
                 data[r, ColDesc2Now - 1] = s.Desc2U;
-                data[r, ColFuSwp - 1] = s.BlockFUnit;
-                data[r, ColLocSwp - 1] = s.BlockLocation;
             }
-            data[r, ColFuIo - 1] = e.FUnit;
-            data[r, ColLocIo - 1] = e.Location;
+            data[r, ColFu - 1] = Identity(e.FUnit, s?.BlockFUnit, row.FUnitMismatch);
+            data[r, ColLoc - 1] = Identity(e.Location, s?.BlockLocation, row.LocationMismatch);
 
+            // The Formulas column is the row's formula status: the queued Q/R description-formula
+            // change (append / rewrite) and the queued repairs of its H/I formulas.
             string formulas = "";
             foreach (SwpProposedEdit edit in row.Edits)
             {
@@ -228,6 +296,17 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                         break;
                 }
             }
+            if (repairs.TryGetValue(TargetOf(row), out List<SwpProposedEdit> rowRepairs))
+            {
+                bool h = false, i = false;
+                foreach (SwpProposedEdit repair in rowRepairs)
+                {
+                    if (repair.Field == SwpField.FormulaH) h = true;
+                    if (repair.Field == SwpField.FormulaI) i = true;
+                }
+                string repairText = h && i ? "repair H+I" : h ? "repair H" : "repair I";
+                formulas = formulas.Length > 0 ? formulas + " · " + repairText : repairText;
+            }
             data[r, ColFormulas - 1] = formulas;
 
             if (overrides.TryGetValue(e.Mnemonic, out SwpRowOverride o))
@@ -235,9 +314,29 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 data[r, ColSkipLabel - 1] = o.SkipLabelCheck ? CheckedGlyph : "";
                 data[r, ColDbIndex - 1] = o.SwpDbIndex.HasValue ? o.SwpDbIndex.Value.ToString() : "";
                 data[r, ColForceIds - 1] = o.ForceElectricalIds ? CheckedGlyph : "";
+                // Ticked only while the row genuinely departs from the default; an override that
+                // says what the default already says is redundant, not a flip.
+                data[r, ColFldMode - 1] =
+                    o.FldMode.HasValue && o.FldMode.Value != workspaceDefault ? CheckedGlyph : "";
+                data[r, ColTrustConfig - 1] =
+                    o.TrustConfigDescriptions.HasValue && o.TrustConfigDescriptions.Value != trustConfigDefault
+                        ? CheckedGlyph : "";
                 data[r, ColDesc1Override - 1] = o.Desc1Override;
                 data[r, ColDesc2Override - 1] = o.Desc2Override;
             }
+        }
+
+        /// <summary>
+        /// One identity column per field: the value alone when the IO list and the SWP block
+        /// agree (or only one side has it), "io / swp" when they differ — the header reads
+        /// "FU (IOL / SWP)", so the order is the header's.
+        /// </summary>
+        private static string Identity(string ioValue, string swpValue, bool mismatch)
+        {
+            string io = (ioValue ?? "").Trim();
+            string swp = (swpValue ?? "").Trim();
+            if (!mismatch) return io.Length > 0 ? io : swp;
+            return (io.Length > 0 ? io : "—") + " / " + (swp.Length > 0 ? swp : "—");
         }
 
         private static void ApplyVerdictFormats(dynamic sheet, int rowCount)
@@ -300,17 +399,44 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 }
             }
 
+            // The H/I formula repairs are workbook-level edits: paint their status on the
+            // Formulas cell of the spine row living on the repaired SWP row.
+            var worksheetRowByTarget = new Dictionary<(string Sheet, int Row), int>();
+            foreach (var pair in session.WorksheetRowByModelRow)
+            {
+                var target = TargetOf(session.Model.Rows[pair.Key]);
+                if (target.Row > 0 && !worksheetRowByTarget.ContainsKey(target)) worksheetRowByTarget[target] = pair.Value;
+            }
+            foreach (SwpProposedEdit edit in session.Model.Edits ?? new List<SwpProposedEdit>())
+            {
+                if (edit.Field != SwpField.FormulaH && edit.Field != SwpField.FormulaI) continue;
+                if (!worksheetRowByTarget.TryGetValue((edit.Sheet ?? "", edit.RowNumber), out int worksheetRow)) continue;
+                if (!actionByKey.TryGetValue(edit.Key, out SwpAction action)) continue;
+                int color;
+                switch (action.Status)
+                {
+                    case SwpActionStatus.Pending: color = PendingYellow; break;
+                    case SwpActionStatus.Conflict:
+                    case SwpActionStatus.ConflictStale: color = ConflictRed; break;
+                    case SwpActionStatus.AppliedExternally: color = ExternalBlue; break;
+                    default: continue;
+                }
+                Paint(paints, ColFormulas, worksheetRow, color);
+            }
+
             // Mandatory data: an IO-list alarm left without ANY T.S. Ref (IO list, glossary
-            // card and SWP all empty) wears red on its T.S. columns.
+            // card and SWP all empty) wears red on its T.S. columns. An identity column whose
+            // two sides differ (and was not marked deliberate) wears the mismatch tint.
             foreach (var pair in session.WorksheetRowByModelRow)
             {
                 SwpSpineRow row = session.Model.Rows[pair.Key];
-                if (!row.TsRefMissing) continue;
-                foreach (int column in new[] { ColTsNow, ColTsNew })
+                if (row.TsRefMissing)
+                    foreach (int column in new[] { ColTsNow, ColTsNew })
+                        Paint(paints, column, pair.Value, ConflictRed);
+                if (!row.MismatchSuppressed)
                 {
-                    if (!paints.TryGetValue(column, out SortedList<int, int> byRow))
-                        paints[column] = byRow = new SortedList<int, int>();
-                    byRow[pair.Value] = ConflictRed;
+                    if (row.FUnitMismatch) Paint(paints, ColFu, pair.Value, MismatchTint);
+                    if (row.LocationMismatch) Paint(paints, ColLoc, pair.Value, MismatchTint);
                 }
             }
 
@@ -334,6 +460,13 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             }
         }
 
+        private static void Paint(Dictionary<int, SortedList<int, int>> paints, int column, int row, int color)
+        {
+            if (!paints.TryGetValue(column, out SortedList<int, int> byRow))
+                paints[column] = byRow = new SortedList<int, int>();
+            byRow[row] = color;
+        }
+
         private static void FlushRun(dynamic sheet, int column, int fromRow, int toRow, int color)
         {
             if (fromRow < 0) return;
@@ -354,6 +487,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 case SwpField.TsRefL: return ColTsNew;
                 case SwpField.Desc1T: return ColDesc1New;
                 case SwpField.Desc2U: return ColDesc2New;
+                case SwpField.FUnitH: return ColFu;
+                case SwpField.LocationI: return ColLoc;
                 default: return ColFormulas;
             }
         }
@@ -390,6 +525,18 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 case SwpBusfieldVerdict.Ok: return "ok";
                 case SwpBusfieldVerdict.NodeMissing: return "node missing";
                 case SwpBusfieldVerdict.DataMismatch: return "data differs";
+                default: return "";
+            }
+        }
+
+        private static string BusExtLabel(SwpBusExtVerdict verdict)
+        {
+            switch (verdict)
+            {
+                case SwpBusExtVerdict.Ok: return "ok";
+                case SwpBusExtVerdict.NotFound: return "not bound";
+                case SwpBusExtVerdict.NodeMismatch: return "node differs";
+                case SwpBusExtVerdict.SubDeviceMismatch: return "sub-device differs";
                 default: return "";
             }
         }

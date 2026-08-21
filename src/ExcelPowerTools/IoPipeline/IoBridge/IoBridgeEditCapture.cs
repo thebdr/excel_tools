@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using ExcelPowerTools.Commands;
+using ExcelPowerTools.Core.Csv;
 using ExcelPowerTools.Core.IoPipeline.IoBridge;
 using ExcelPowerTools.Interop;
 using Excel = Microsoft.Office.Interop.Excel;
@@ -54,7 +55,29 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             try
             {
                 dynamic sheet = sh;
-                if ((string)sheet.Name != IoBridgeWorkspace.QueueSheetName) return;
+                string name = (string)sheet.Name;
+
+                // Card sheets: the blue-bordered cells open the source documents at the row.
+                if (session.SheetMaps.TryGetValue(name, out BridgeSheetMap map))
+                {
+                    if (!map.RowByWorksheetRow.TryGetValue((int)target.Row, out BridgeRow row)) return;
+                    int layoutIndex = session.LayoutIndexOfSheetColumn((int)target.Column);
+                    if (layoutIndex < 0) return;
+
+                    if (layoutIndex == IoBridgeBuilder.IoOpenLayoutColumn(session) && row.IoSourceRow > 0)
+                    {
+                        cancel = true;
+                        OpenIoListAt(session, map, row, layoutIndex);
+                    }
+                    else if (layoutIndex == IoBridgeBuilder.CsvOpenLayoutColumn(session) && row.Csv != null)
+                    {
+                        cancel = true;
+                        OpenCsvAt(session, row);
+                    }
+                    return;
+                }
+
+                if (name != IoBridgeWorkspace.QueueSheetName) return;
                 if ((int)target.Column != IoBridgeQueueSheet.IncludeColumn) return;
 
                 BridgeAction action = IoBridgeQueueSheet.ActionAtRow(session, (int)target.Row);
@@ -71,13 +94,72 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             catch { }
         }
 
+        /// <summary>The IO-list workbook (an instance open in this Excel is reused) at the row's
+        /// source row, on the card sheet, in the double-clicked column.</summary>
+        private static void OpenIoListAt(IoBridgeSession session, BridgeSheetMap map, BridgeRow row, int layoutIndex)
+        {
+            try
+            {
+                dynamic app = ExcelApp.App;
+                dynamic workbook = IoBridgeBuilder.FindOpenWorkbook(app, session.IoListPath);
+                if (workbook == null)
+                {
+                    try { app.StatusBar = "IO Bridge: opening " + System.IO.Path.GetFileName(session.IoListPath) + "…"; } catch { }
+                    workbook = app.Workbooks.Open(session.IoListPath);
+                }
+                dynamic worksheet = workbook.Worksheets(map.Model.SheetName);
+                int ioCol = layoutIndex < map.IoColOfLayout.Length ? map.IoColOfLayout[layoutIndex] : -1;
+                app.Goto(worksheet.Cells(row.IoSourceRow, ioCol >= 0 ? ioCol + 1 : 1), true);
+                try { app.StatusBar = false; } catch { }
+            }
+            catch (Exception ex)
+            {
+                try { ExcelApp.App.StatusBar = "IO Bridge: could not open the IO list — " + ex.Message; } catch { }
+            }
+        }
+
+        /// <summary>The row's CSV in the add-in's CSV workspace (opened or fronted), cursor on the
+        /// record's Name cell — the workspace writes record i on worksheet row i + 1.</summary>
+        private static void OpenCsvAt(IoBridgeSession session, BridgeRow row)
+        {
+            try
+            {
+                string path = row.Csv.File == BridgeTarget.InputsCsv ? session.InputsCsvPath : session.OutputsCsvPath;
+                CsvColumnsMap csvMap = row.Csv.File == BridgeTarget.InputsCsv ? session.Model.InputsMap : session.Model.OutputsMap;
+                if (!CsvCommands.OpenCsvFromPath(path))
+                {
+                    try { ExcelApp.App.StatusBar = "IO Bridge: could not open " + System.IO.Path.GetFileName(path) + "."; } catch { }
+                    return;
+                }
+
+                CsvSession csv = CsvSession.FindByPath(CsvWorkspaceLogic.CanonicalPath(path));
+                dynamic sheet = csv?.ResolveSheet();
+                if (sheet == null) return;
+
+                dynamic app = ExcelApp.App;
+                try { sheet.Activate(); } catch { }
+                int column = csvMap != null && csvMap.Name >= 0 ? csvMap.Name + 1 : 1;
+                app.Goto(sheet.Cells(row.Csv.RecordIndex + 1, column), true);
+                try { app.StatusBar = false; } catch { }
+            }
+            catch (Exception ex)
+            {
+                try { ExcelApp.App.StatusBar = "IO Bridge: could not open the CSV — " + ex.Message; } catch { }
+            }
+        }
+
         /// <summary>The bridge workbook closing ends the session; the queue is already on disk.</summary>
         public static void OnWorkbookBeforeClose(Excel.Workbook workbook, ref bool cancel)
         {
             try
             {
                 if (IoBridgeSession.Current != null && IoBridgeWorkspace.IsLiveBridgeWorkbook(workbook))
+                {
+                    // The workbook is a view: every decision lives in the sidecar, so Excel's own
+                    // "save changes?" prompt is noise — mark it saved and let it go.
+                    try { workbook.Saved = true; } catch { }
                     IoBridgeSession.Teardown();
+                }
             }
             catch { }
         }

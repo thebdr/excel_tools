@@ -373,7 +373,7 @@ namespace ExcelPowerTools.Tests.IoPipeline.IoBridge
         }
 
         [Fact]
-        public void Opted_in_virtuals_join_by_name_and_stay_out_without_the_regex()
+        public void Opted_in_virtuals_join_clean_and_are_flagged_twins_without_the_regex()
         {
             const string virtInputs =
                 "#,Signal ID,Type,Logic,RE Filter,FE Filter,A1 Filter,A0 Filter,Events,Queue,Flags,Node,Offset,Bit,Default Virtual Value,Card,Description\r\n" +
@@ -390,14 +390,17 @@ namespace ExcelPowerTools.Tests.IoPipeline.IoBridge
                 },
             };
 
-            // Without the regex: the virtuals stay out; the IO row reads 0/2 against nothing... i.e.
-            // no record at the address at all → missing.
+            // Without the regex the virtuals are not EXPECTED — they still carry the row's names,
+            // so they bind as its (flagged) twins rather than leaving the row "missing".
             BridgeRow without = IoBridgeJoin.Build(new[] { card },
                     CsvFile.Load(Encoding.UTF8.GetBytes(virtInputs)),
                     CsvFile.Load(Encoding.UTF8.GetBytes(OutputsText)))
                 .Sheets.Single().SpineRows.Single();
-            Assert.Equal("missing", without.MatchVerdict);
-            Assert.Null(without.Csv);
+            Assert.NotNull(without.Csv);
+            Assert.True(without.Csv!.Virtual);
+            Assert.Equal(2, without.Csv.RecordIndexes.Count);
+            Assert.Equal("virtual", without.MatchVerdict);
+            Assert.EndsWith("· virtual twin", without.RowLabel);
 
             // With the regex: both virtual records attach BY NAME and the row agrees.
             BridgeRow with = IoBridgeJoin.Build(new[] { card },

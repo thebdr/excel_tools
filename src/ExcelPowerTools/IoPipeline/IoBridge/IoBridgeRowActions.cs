@@ -22,6 +22,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
         private const string KeyConditionCsv = "C", KeyConditionIo = "D";
         private const string KeyDescription = "E", KeyIntegrate = "I";
         private const string KeyDisable = "X", KeyEnable = "V", KeyDelete = "Z";
+        private const string KeyType = "T";
         private sealed class Choice
         {
             public string Label;
@@ -163,6 +164,15 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     Perform = () => QueueIntegrateMany(session, map, integrable),
                 });
 
+            // Virtual twins: the record carries the mnemonic but acquires nothing — make it real.
+            var twins = rows.FindAll(r => r.Csv != null && !r.Csv.IsMulti && r.Csv.Virtual);
+            if (twins.Count > 0)
+                choices.Add(new Choice
+                {
+                    Label = KeyType + " — Change the CSV type of the virtual twins (make them real) — " + twins.Count + " row(s)",
+                    Perform = () => QueueTypeChangeMany(session, twins),
+                });
+
             var enabled = rows.FindAll(r => r.Csv != null && !r.Csv.IsMulti && !r.Csv.Disabled);
             if (enabled.Count > 0)
                 choices.Add(new Choice
@@ -300,6 +310,20 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     });
             }
 
+            if (singleCsv && row.Csv.Virtual)
+                choices.Add(new Choice
+                {
+                    // The twin looks like the signal but acquires nothing from the field: give it a
+                    // real type (same picker as Integrate); the address update then follows as usual.
+                    Label = KeyType + " — Change the CSV type (virtual twin, type " + row.CsvValues[CsvCanonical.Type] + " → real signal)",
+                    Perform = () =>
+                    {
+                        string type = PromptCsvType(row.Csv.File == BridgeTarget.InputsCsv,
+                            row.Signal.Mnemonic + " (virtual twin)", "Change CSV type");
+                        if (type != null) QueueTypeChange(session, row, type);
+                    },
+                });
+
             if (singleCsv)
             {
                 bool disabled = row.Csv.Disabled;
@@ -376,10 +400,19 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     string ioValue = IoValue(row, ioCol);
                     string csvValue = row.CsvValues[CsvCanonical.Name];
 
+                    // The comparison uses the row's EFFECTIVE mnemonic (the exclude regex may have
+                    // filtered generator keys out of the cell); an IO-side write composes the cell
+                    // back the way the IO list spells it — BUS_ prefix on module rows, filtered keys
+                    // re-attached — so the list's own conventions are never overwritten.
+                    bool busPrefixed = row.Kind == BridgeRowKind.Module &&
+                        ioValue.Trim().StartsWith("BUS_", StringComparison.OrdinalIgnoreCase);
+                    string ioNew = (busPrefixed ? "BUS_" : "") + csvValue +
+                        (row.ExcludedMnemonics.Length > 0 ? "/" + row.ExcludedMnemonics : "");
+
                     values = MakeSetPair(session, map, row, pair,
                         csvFieldCanonical: CsvCanonical.Name, csvOld: csvValue,
-                        csvNew: CoreIoListLogic.StripBusPrefix(ioValue),
-                        ioFieldHeader: "mnemonic", ioOld: ioValue, ioNew: csvValue);
+                        csvNew: CoreIoListLogic.StripBusPrefix(row.Signal.Mnemonic),
+                        ioFieldHeader: "mnemonic", ioOld: ioValue, ioNew: ioNew);
                     return true;
                 }
                 case LinkedField.NormalCondition:
@@ -572,7 +605,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
         /// The CSV Type is not derivable from the IO list — one picker, shared by all callers.
         /// Taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI · 8 DEO · 9 VAI · 10 VAO · 11 BUS.
         /// </summary>
-        internal static string PromptCsvType(bool isInput, string subject)
+        internal static string PromptCsvType(bool isInput, string subject, string caption = "Integrate into CSV")
         {
             string[] typeOptions = isInput
                 ? new[]
@@ -592,8 +625,46 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     "8 — DEO (data exchange out)",
                     "10 — VAO (virtual analog output)",
                 };
-            int pick = Dialogs.SelectOne("CSV Type for " + subject + ":", typeOptions, "Integrate into CSV");
+            int pick = Dialogs.SelectOne("CSV Type for " + subject + ":", typeOptions, caption);
             return pick < 0 ? null : typeOptions[pick].Split(' ')[0];
+        }
+
+        /// <summary>
+        /// A virtual twin becomes a real signal through its Type field — a plain SetField on the
+        /// record, which the apply resolves by mnemonic (the twin's address fields are stale).
+        /// </summary>
+        private static void QueueTypeChange(IoBridgeSession session, BridgeRow row, string type)
+        {
+            string header = session.CsvFieldHeaderFor(row, CsvCanonical.Type);
+            if (header.Length == 0 || row.Csv == null) return;
+            string current = CsvCanonical.Type < row.CsvValues.Length ? row.CsvValues[CsvCanonical.Type] : "";
+            if (current == type) return;
+
+            session.Queue.Record(new BridgeAction
+            {
+                Kind = BridgeActionKind.SetField,
+                Target = row.Csv.File,
+                Signal = IoBridgeEditCapture.CloneSignal(row.Signal),
+                FieldHeader = header,
+                OldValue = current,
+                NewValue = type,
+                QueuedUtc = DateTime.UtcNow.ToString("O"),
+            });
+        }
+
+        /// <summary>One type prompt per CSV file, applied to every twin of that file.</summary>
+        private static void QueueTypeChangeMany(IoBridgeSession session, List<BridgeRow> twins)
+        {
+            foreach (BridgeTarget file in new[] { BridgeTarget.InputsCsv, BridgeTarget.OutputsCsv })
+            {
+                var group = twins.FindAll(r => r.Csv.File == file);
+                if (group.Count == 0) continue;
+                string type = PromptCsvType(file == BridgeTarget.InputsCsv,
+                    group.Count + " virtual twin(s) in " + (file == BridgeTarget.InputsCsv ? "Inputs" : "Outputs"),
+                    "Change CSV type");
+                if (type == null) continue;
+                foreach (BridgeRow row in group) QueueTypeChange(session, row, type);
+            }
         }
 
         private static void QueueIntegrate(IoBridgeSession session, BridgeSheetMap map, BridgeRow row, string type)

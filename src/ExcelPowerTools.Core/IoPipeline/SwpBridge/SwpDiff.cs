@@ -45,6 +45,10 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public bool FUnitMismatch;
         public bool LocationMismatch;
 
+        /// <summary>This row's effective FLD treatment is the brutal overwrite (H/I cells) rather
+        /// than the append — the workspace default, or the row's own [Overwrite FLD] flip.</summary>
+        public bool FldOverwriteMode;
+
         /// <summary>The row's mismatch is marked deliberate ([Mismatch OK] override, or a
         /// generated row): the warning and the orange verdict stay silent; the configured
         /// mismatch treatment still applies.</summary>
@@ -59,6 +63,15 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public SwpCsvVerdict CsvVerdict = SwpCsvVerdict.NotChecked;
         public SwpBusfieldVerdict BusfieldVerdict = SwpBusfieldVerdict.NotChecked;
         public SwpAlarmVerdict AlarmVerdict = SwpAlarmVerdict.NotChecked;
+        public SwpBusExtVerdict BusExtVerdict = SwpBusExtVerdict.NotChecked;
+
+        /// <summary>Where each coherence verdict came from — the 1-based line of the checked
+        /// document (0 = nothing matched), so a double-click can open the source right there.</summary>
+        public int CsvLine;
+        public int BusfieldLine;
+        public int BusExtLine;
+        public int AlarmLine;
+        public string AlarmSource = "";   // the Alarms_*.txt file name the match came from
 
         /// <summary>The phrase this row keys the glossary with (full permanent part).</summary>
         public string GlossaryKey = "";
@@ -208,10 +221,38 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             bool forceElectricalIds = overrides != null && overrides.ForceElectricalIds;
             bool isBeltSheet = coordinate.SheetName.EndsWith("BELT", StringComparison.Ordinal);
 
-            row.FUnitMismatch = !SameTrimmed(snapshot.BlockFUnit, entry.FUnit);
-            row.LocationMismatch = !SameTrimmed(snapshot.BlockLocation, entry.Location);
+            // The FLD rule: the IO list's Functional unit / Location / Device must ALWAYS be
+            // visible in the SWP — either in the row's own cells (H/I/J, "brutal overwrite") or
+            // appended to the descriptions. Append mode compares against the BLOCK header (the
+            // row's H/I are the header's formulas; broken ones get restored first); overwrite
+            // mode compares against the row's OWN cells — after an overwrite they hold the IO
+            // identity and the row reads up to date.
+            // The treatment is per-row: [Overwrite FLD] / [Append FLD] flips THIS row away from
+            // the workspace default. The FLD still always lands somewhere — only where changes.
+            SwpMismatchMode fldMode = overrides?.FldMode ?? options.MismatchMode;
+            bool overwriteMode = fldMode == SwpMismatchMode.Overwrite;
+            row.FldOverwriteMode = overwriteMode;
+            string swpFUnit = overwriteMode && snapshot.HasCellH ? snapshot.CachedH : snapshot.BlockFUnit;
+            string swpLocation = overwriteMode && snapshot.HasCellI ? snapshot.CachedI : snapshot.BlockLocation;
+            row.FUnitMismatch = !SameTrimmed(swpFUnit, entry.FUnit);
+            row.LocationMismatch = !SameTrimmed(swpLocation, entry.Location);
             row.MismatchSuppressed = deliberate;
             bool mismatch = row.FUnitMismatch || row.LocationMismatch;
+
+            // Brutal overwrite puts the identity in the row's own cells — unless a cell is a
+            // shared formula (not writable headlessly): that row falls back to the append, so
+            // the FLD is never lost.
+            bool overwriteCells = mismatch && overwriteMode;
+            if (overwriteCells &&
+                ((row.FUnitMismatch && snapshot.FormulaHShared) || (row.LocationMismatch && snapshot.FormulaIShared)))
+            {
+                overwriteCells = false;
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "the row's FU/Location cells are shared formulas — not overwritable headlessly; " +
+                    "the identity is appended to the descriptions instead",
+                    entry.CardSheet, entry.SourceRow, entry.Mnemonic));
+            }
+            bool appendIdentity = mismatch && !overwriteCells;
 
             if (mismatch && !deliberate)
             {
@@ -238,7 +279,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
             string additionToDescription = "";
             string deviceValue = entry.Device;
-            if (mismatch && options.MismatchMode == SwpMismatchMode.AppendToDescription)
+            if (appendIdentity)
             {
                 additionToDescription = " " + (entry.FUnit + entry.Location + entry.Device).Replace(" ", "");
                 deviceValue = "";
@@ -246,8 +287,15 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
             // TrustConfigPlant: generated alarms (and "P*"-typed module rows) trust the template
             // texts already in CONFIG_PLANT — only the label addition is written into T/U.
-            bool trustTemplates = options.TrustConfigPlant &&
-                (entry.GeneratedBy.Length > 0 || entry.TypeCell.StartsWith("P", StringComparison.Ordinal));
+            // "Never overwrite CONFIG_PLANT descriptions": the row's final SCADA text is
+            // CONFIG's template ⊕ T, so writing the composed IO text into T stacks a second
+            // sentence onto a template that already says it. Trusted rows contribute the FLD
+            // label alone (and nothing at all when there is no mismatch — see the guard below).
+            // A per-row tick answers outright; only the workspace default carries the automatic
+            // scope (rows this bridge generated + the "P*"-typed module rows).
+            bool trustTemplates = overrides?.TrustConfigDescriptions ??
+                (options.TrustConfigPlant &&
+                 (entry.GeneratedBy.Length > 0 || entry.TypeCell.StartsWith("P", StringComparison.Ordinal)));
             string desc1Value = trustTemplates ? additionToDescription : descriptions.Desc1 + additionToDescription;
             string desc2Value = trustTemplates ? additionToDescription : descriptions.Desc2 + additionToDescription;
 
@@ -282,6 +330,16 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 !SwpFieldCompare.Same(SwpField.DeviceJ, snapshot.DeviceJ, deviceValue))
                 Edit(SwpField.DeviceJ, snapshot.DeviceJ, deviceValue);
 
+            // Brutal overwrite: the IO identity replaces the block formula in the row's own
+            // H/I cells (plain values — the formula cleaner reads them as deliberate).
+            if (overwriteCells)
+            {
+                if (row.FUnitMismatch && !SwpFieldCompare.Same(SwpField.FUnitH, snapshot.CachedH, entry.FUnit))
+                    Edit(SwpField.FUnitH, snapshot.CachedH, entry.FUnit);
+                if (row.LocationMismatch && !SwpFieldCompare.Same(SwpField.LocationI, snapshot.CachedI, entry.Location))
+                    Edit(SwpField.LocationI, snapshot.CachedI, entry.Location);
+            }
+
             // T.S. Ref: the SCADA launches the troubleshooting manual straight from this code,
             // so an empty composed value NEVER blanks an existing one — a wrong section beats
             // no action. And IO-list alarms MUST carry one: a row left with none anywhere
@@ -308,7 +366,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     Edit(SwpField.Desc2U, snapshot.Desc2U, desc2Value);
             }
 
-            bool appendPending = mismatch && options.MismatchMode == SwpMismatchMode.AppendToDescription;
+            bool appendPending = appendIdentity;
             ProposeFormulaEdit(row, coordinate, snapshot, options, appendPending, SwpField.FormulaQ,
                 snapshot.FormulaQ, snapshot.FormulaQShared, "T", log);
             ProposeFormulaEdit(row, coordinate, snapshot, options, appendPending, SwpField.FormulaR,

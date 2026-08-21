@@ -180,10 +180,11 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             }
             else
             {
-                // No bit address: the ID column carries the node. Profinet nodes are numeric;
-                // AS-I slaves use nA/nB addressing ("1A", "10B") — both are real bus identities
-                // and the SWP receives them as node.0.0 ("236.0.0", "1A.0.0" — exactly what the
-                // legacy wrote). Anything else stays a valid diagnostic WITHOUT an address.
+                // No bit address: the ID column carries the node. Profinet nodes are numeric and
+                // the SWP receives them as node.0.0 ("236.0.0", what the legacy wrote); AS-I
+                // slaves use nA/nB addressing ("1A", "10B") and the SWP receives their composed
+                // line.slave identity ("1M.24A", no ".0.0"). Anything else stays a valid
+                // diagnostic WITHOUT an address.
                 string nodeRaw = Clean(row.IdCell, "ID", row, cleanedSeen, log).Trim();
                 string node = IoListLogic.Norm(nodeRaw);
                 if (IsAllDigits(node))
@@ -195,6 +196,18 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 {
                     entry.IsBusModule = true;
                     entry.Node = asiNode;
+
+                    // The slave's full identity: the gateway line from the Slot column (empty =
+                    // line 1) + the slave address; the gateway's own node comes from the IO
+                    // list's row order (a slave row sits under its gateway row).
+                    string slot = Clean(row.SlotCell ?? "", "Slot", row, cleanedSeen, log).Trim();
+                    entry.AsiNode = SwpAsiAddressing.Compose(slot, asiNode);
+                    if (entry.AsiNode.Length == 0 && slot.Length > 0)
+                        log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                            "AS-I slot \"" + slot + "\" is not a gateway line (1M/2M) — slave " +
+                            asiNode + " cannot be bound",
+                            row.CardSheet, row.SourceRow, m));
+                    entry.AsiMasterNode = IoListLogic.Norm(row.ModuleNode ?? "");
                 }
                 else if (nodeRaw.Length > 0)
                 {

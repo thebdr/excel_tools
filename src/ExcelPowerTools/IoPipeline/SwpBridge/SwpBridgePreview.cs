@@ -29,9 +29,11 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
         private static readonly string[] Headers =
         {
-            "SWP row", "Tag type", "Entry", "Bit", "Mnemonic", "FUnit (H)", "Location (I)",
-            "Export", "I/O addr", "Device",
-            "T.S. ref", "Description 1 (T)", "Description 2 (U)", "Final text (Q)", "Final text (R)", "Stamp",
+            // The written columns in the SWP's own order — Export (B), I/O addr (G), then the FLD
+            // as neighbours: FUnit (H) · Location (I) · Device (J) — so the preview reads like the file.
+            "SWP row", "Tag type (A)", "Entry (C)", "Bit (D)", "Mnemonic",
+            "Export (B)", "I/O addr (G)", "FUnit (H)", "Location (I)", "Device (J)",
+            "T.S. ref (L)", "Description 1 (T)", "Description 2 (U)", "Final text (Q)", "Final text (R)", "Stamp (AA)",
         };
 
         public static void Open(SwpBridgeSession session, int modelRow)
@@ -58,6 +60,24 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             try { workbook?.Worksheets(SwpBridgeWorkspace.PreviewSheetName).Activate(); } catch { }
         }
 
+        /// <summary>
+        /// Creates/refreshes the _Preview sheet for a row WITHOUT stealing focus — used at build
+        /// time so the sheet exists (and its tab is colored) the moment the workspace opens.
+        /// </summary>
+        public static void Prepare(SwpBridgeSession session, int modelRow)
+        {
+            if (session?.Model == null || modelRow < 0 || modelRow >= session.Model.Rows.Count) return;
+            SwpSpineRow row = session.Model.Rows[modelRow];
+            if (row.Snapshot == null || row.Mapped == null || !row.Mapped.Ok) return;
+
+            session.PreviewContext = new Context
+            {
+                ModelRow = modelRow,
+                ShowFullBlock = session.PreviewContext?.ShowFullBlock ?? false,
+            };
+            Rerender(session);   // renders into _Preview; unlike Open it never activates the sheet
+        }
+
         public static void ToggleFullBlock(SwpBridgeSession session)
         {
             if (session.PreviewContext == null) return;
@@ -77,8 +97,26 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             SwpBridgeEditCapture.RunSuppressed(() =>
             {
                 dynamic sheet = SwpBridgeAuxSheets.EnsureSheet(workbook, SwpBridgeWorkspace.PreviewSheetName);
+                PlaceAfterWorkspace(workbook, sheet);
                 RenderInto(sheet, session, session.Model.Rows[context.ModelRow], context.ShowFullBlock);
             });
+        }
+
+        /// <summary>
+        /// _Preview belongs next to the sheet it unfolds: the tab sits right after Workspace, not
+        /// at the far end of the strip where EnsureSheet appends it. Moved only when it is in the
+        /// wrong place — a Move on every re-render would flicker the tab strip on each toggle.
+        /// </summary>
+        private static void PlaceAfterWorkspace(dynamic workbook, dynamic sheet)
+        {
+            try
+            {
+                dynamic spine = SwpBridgeQueueSheet.FindSheet(workbook, SwpBridgeWorkspace.SpineSheetName);
+                if (spine == null) return;
+                if ((int)sheet.Index == (int)spine.Index + 1) return;
+                sheet.Move(Type.Missing, spine);
+            }
+            catch { }
         }
 
         private static void RenderInto(dynamic sheet, SwpBridgeSession session, SwpSpineRow row, bool fullBlock)
@@ -128,7 +166,11 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             headerRange.Interior.Color = SwpBridgeSpineSheet.SwpHeaderOrange;   // this is all SWP
             headerRange.Font.Bold = true;
 
-            if (shown.Count == 0) return;
+            if (shown.Count == 0)
+            {
+                AutoFitColumns(sheet, HeaderRow);
+                return;
+            }
 
             var data = new object[shown.Count, Headers.Length];
             var greenCells = new List<(int Offset, int Column)>();
@@ -153,10 +195,10 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 data[r, 2] = bit.TableEntry.ToString();
                 data[r, 3] = bit.Bit.ToString();
                 data[r, 4] = mnemonic;
-                data[r, 5] = bit.CachedH;
-                data[r, 6] = bit.CachedI;
-                data[r, 7] = Show(bit.ExportB, rowEdits, SwpField.ExportB, r, greenCells);
-                data[r, 8] = Show(bit.AddressG, rowEdits, SwpField.AddressG, r, greenCells);
+                data[r, 5] = Show(bit.ExportB, rowEdits, SwpField.ExportB, r, greenCells);
+                data[r, 6] = Show(bit.AddressG, rowEdits, SwpField.AddressG, r, greenCells);
+                data[r, 7] = Show(bit.CachedH, rowEdits, SwpField.FUnitH, r, greenCells);
+                data[r, 8] = Show(bit.CachedI, rowEdits, SwpField.LocationI, r, greenCells);
                 data[r, 9] = Show(bit.DeviceJ, rowEdits, SwpField.DeviceJ, r, greenCells);
                 data[r, 10] = Show(bit.TsRefL, rowEdits, SwpField.TsRefL, r, greenCells);
                 data[r, 11] = Show(bit.Desc1T, rowEdits, SwpField.Desc1T, r, greenCells);
@@ -188,14 +230,21 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             foreach ((int offset, int column) in greenCells)
                 sheet.Cells(HeaderRow + 1 + offset, column).Interior.Color = NewValueGreen;
 
+            AutoFitColumns(sheet, HeaderRow + shown.Count);
+        }
+
+        /// <summary>Every column fits its longest text, header row included — the description
+        /// and final-text columns are NOT capped: the preview exists to read them whole (the
+        /// title and toggle lines above the header spill freely and do not count).</summary>
+        private static void AutoFitColumns(dynamic sheet, int lastRow)
+        {
             try
             {
-                sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(HeaderRow + shown.Count, Headers.Length))
-                    .Columns.AutoFit();
-                for (int c = 12; c <= 15; c++)
+                sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(lastRow, Headers.Length)).Columns.AutoFit();
+                for (int c = 1; c <= Headers.Length; c++)
                 {
                     dynamic column = sheet.Columns(c);
-                    if ((double)column.ColumnWidth > 60) column.ColumnWidth = 60;
+                    if ((double)column.ColumnWidth < 6) column.ColumnWidth = 6;
                 }
             }
             catch { }
@@ -247,8 +296,10 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         {
             switch (field)
             {
-                case SwpField.ExportB: return 8;
-                case SwpField.AddressG: return 9;
+                case SwpField.ExportB: return 6;
+                case SwpField.AddressG: return 7;
+                case SwpField.FUnitH: return 8;
+                case SwpField.LocationI: return 9;
                 case SwpField.DeviceJ: return 10;
                 case SwpField.TsRefL: return 11;
                 case SwpField.Desc1T: return 12;

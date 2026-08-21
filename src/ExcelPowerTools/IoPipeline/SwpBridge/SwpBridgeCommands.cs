@@ -56,14 +56,17 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 rootFolder = form.SwpRootFolder;
             }
 
+            // Reconfiguring while a workspace is open REUSES its workbook rather than closing it:
+            // closing the bridge's only workbook made Excel quit on a settings change. The old
+            // session's runtime state is retired, the new model renders into the same workbook.
             dynamic existing = SwpBridgeWorkspace.FindLiveWorkbook(app);
-            if (existing != null)
+            bool reuse = existing != null;
+            if (reuse)
             {
-                if (!Dialogs.Confirm("An SWP Bridge workspace is already open. Close it and build the new one?\n" +
+                if (!Dialogs.Confirm("Rebuild the open SWP Bridge workspace with these settings?\n" +
                                      "(Decisions are safe — they live in the sidecar.)"))
                     return;
-                try { existing.Close(false); } catch { }
-                SwpBridgeSession.Teardown();
+                SwpBridgeSession.Current?.RetireForRebuild();
             }
 
             var session = new SwpBridgeSession
@@ -91,7 +94,15 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     using (new ExcelPaintFreeze())
                     using (new ExcelStateGuard(suppressEvents: true, manualCalculation: true))
                     {
-                        workbook = SwpBridgeWorkspace.CreateWorkbook(app, out workspaceId);
+                        if (reuse)
+                        {
+                            workbook = existing;
+                            workspaceId = SwpBridgeWorkspace.TryGetWorkspaceId(workbook);
+                        }
+                        else
+                        {
+                            workbook = SwpBridgeWorkspace.CreateWorkbook(app, out workspaceId);
+                        }
                         session.WorkspaceId = workspaceId;
                         SwpBridgeBuilder.RenderWorkspace(workbook, session);
                     }
@@ -104,17 +115,29 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 catch (Exception ex)
                 {
                     failure = ex;
-                    SwpBridgeWorkspace.ForgetWorkspace(workspaceId);
-                    try { workbook?.Close(false); } catch { }
+                    // Only tear down a workbook WE created; a reused one stays open for the user.
+                    if (!reuse)
+                    {
+                        SwpBridgeWorkspace.ForgetWorkspace(workspaceId);
+                        try { workbook?.Close(false); } catch { }
+                    }
                     try { session.Dashboard?.CloseFromExcel(); } catch { }
                     session.Dashboard = null;
                 }
             }
 
             if (failure != null)
+            {
+                // In reuse mode the workbook stays open (that is the whole point), but it no
+                // longer has a live session behind it — say so, instead of leaving dead sheets.
+                string tail = reuse
+                    ? "\n\nThe workbook stayed open, but its sheets are now stale: open the " +
+                      "workspace again to rebuild it. Decisions are safe in the sidecar."
+                    : "";
                 Dialogs.Info(failure is OperationCanceledException
-                    ? "Build cancelled."
-                    : "The workspace could not be built:\n" + Describe(failure));
+                    ? "Build cancelled." + tail
+                    : "The workspace could not be built:\n" + Describe(failure) + tail);
+            }
         }
 
         [ExcelCommand(Name = "PT_SwpBridgeRefresh", MenuName = "Power Tools", MenuText = "SWP Bridge: refresh from documents")]

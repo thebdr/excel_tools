@@ -25,18 +25,17 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             List<SwpAction> included = session.Queue.IncludedPending();
             if (included.Count == 0)
             {
-                MessageBox.Show("Nothing to apply — no included pending action.", "SWP Bridge",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Dialogs.Info("Nothing to apply — no included pending action.", "SWP Bridge");
                 return;
             }
 
             string sourcePath = session.SwpPath;
             if (SwpBridgeCardReader.FindOpenWorkbook(app, sourcePath) != null)
             {
-                MessageBox.Show(
+                Dialogs.Info(
                     "The SWP is open in this Excel:\n" + sourcePath +
                     "\n\nClose it first — the bridge patches the file on disk.",
-                    "SWP Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "SWP Bridge");
                 return;
             }
 
@@ -51,17 +50,16 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 (versionFolder
                     ? "Mode: a NEW dated version folder is created and patched; the current file stays untouched."
                     : "Mode: in-place on\n" + sourcePath + "\n(a .bak of the previous state is kept).");
-            if (MessageBox.Show(question, "SWP Bridge — apply", MessageBoxButtons.OKCancel,
-                    MessageBoxIcon.Question) != DialogResult.OK) return;
+            if (!Dialogs.OkCancel(question, "SWP Bridge — apply")) return;
 
             // TOCTOU: the file must still be what the diff was computed against.
             byte[] currentBytes = SwpBridgeBuilder.ReadFileBytes(sourcePath);
             if (!SameBytes(currentBytes, session.SwpBytes))
             {
-                MessageBox.Show(
+                Dialogs.Info(
                     "The SWP changed on disk since the workspace was built.\n" +
                     "Refresh the workspace and review the new diff before applying.",
-                    "SWP Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "SWP Bridge");
                 return;
             }
 
@@ -85,10 +83,10 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 if (!VerifyPatched(result, session))
                 {
                     session.Dashboard?.PostPhase("Ready");
-                    MessageBox.Show(
+                    Dialogs.Info(
                         "The patched workbook did not verify — NOTHING was written.\n" +
                         "The queue is unchanged; refresh and retry.",
-                        "SWP Bridge", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        "SWP Bridge");
                     return;
                 }
 
@@ -102,10 +100,10 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     if (!AtomicFileStore.DiskStillMatches(sourcePath, expectedExists: true, expectedBytes: currentBytes))
                     {
                         session.Dashboard?.PostPhase("Ready");
-                        MessageBox.Show(
+                        Dialogs.Info(
                             "The SWP changed on disk while applying — NOTHING was written.\n" +
                             "Refresh the workspace and retry.",
-                            "SWP Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            "SWP Bridge");
                         return;
                     }
                     AtomicFileStore.WriteWithBackup(sourcePath, result.PatchedBytes);
@@ -130,8 +128,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     ? "\n\nNew version:\n" + targetPath
                     : "") +
                 (conflicts > 0 ? "\n\nConflicted actions stay queued — the refreshed diff shows the new reality." : "");
-            MessageBox.Show(message, "SWP Bridge — apply", MessageBoxButtons.OK,
-                conflicts > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            Dialogs.Info(message, "SWP Bridge — apply");
         }
 
         /// <summary>Re-reads the patched bytes and confirms every applied action landed.</summary>

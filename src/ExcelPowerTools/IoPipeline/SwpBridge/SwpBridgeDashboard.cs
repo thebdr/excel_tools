@@ -187,6 +187,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 layout.Controls.Add(buttons, 0, 5);
 
                 Controls.Add(layout);
+                ExcelPowerTools.UI.GdiText.Apply(this);   // GDI text, like the native controls
             }
 
             public void AllowClose() => _closable = true;

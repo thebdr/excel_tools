@@ -93,6 +93,12 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                         try { card = ((string)target.Text ?? "").Trim(); } catch { }
                         SwpBridgeAuxSheets.OpenTsRefLookup(sheet.Parent, session, card);
                     }
+                    else if (column == SwpBridgeSpineSheet.ColCsv || column == SwpBridgeSpineSheet.ColBusfield ||
+                             column == SwpBridgeSpineSheet.ColAlarms || column == SwpBridgeSpineSheet.ColBusExt)
+                    {
+                        cancel = true;
+                        OpenCoherenceSource(session, modelRow, column);
+                    }
                     return;
                 }
 
@@ -209,13 +215,142 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             }
         }
 
+        /// <summary>
+        /// Opens the document a coherence verdict was read from, at the matched line: the CSVs
+        /// (Plant_Inputs, Busfield, BUS_ExtendedDiagnostic) in Excel, the exported Alarms_*.txt
+        /// in Notepad++ (Notepad when it is not installed). A verdict that matched nothing opens
+        /// the document at its top; a check that did not run opens nothing.
+        /// </summary>
+        private static void OpenCoherenceSource(SwpBridgeSession session, int modelRow, int column)
+        {
+            try
+            {
+                SwpSpineRow row = session.Model.Rows[modelRow];
+                SwpBridgeSettings s = session.Settings;
+                string path = "";
+                int line = 0;
+                if (column == SwpBridgeSpineSheet.ColCsv && row.CsvVerdict != SwpCsvVerdict.NotChecked)
+                {
+                    path = s.PlantInputsCsvPath;
+                    line = row.CsvLine;
+                }
+                else if (column == SwpBridgeSpineSheet.ColBusfield && row.BusfieldVerdict != SwpBusfieldVerdict.NotChecked)
+                {
+                    path = s.BusfieldCsvPath;
+                    line = row.BusfieldLine;
+                }
+                else if (column == SwpBridgeSpineSheet.ColBusExt && row.BusExtVerdict != SwpBusExtVerdict.NotChecked)
+                {
+                    path = s.BusExtendedDiagnosticCsvPath;
+                    line = row.BusExtLine;
+                }
+                else if (column == SwpBridgeSpineSheet.ColAlarms && row.AlarmVerdict != SwpAlarmVerdict.NotChecked)
+                {
+                    line = row.AlarmLine;
+                    foreach ((string file, string[] _) in session.AlarmStringsFiles)
+                    {
+                        if (row.AlarmSource.Length > 0 &&
+                            !string.Equals(System.IO.Path.GetFileName(file), row.AlarmSource, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        path = file;
+                        break;
+                    }
+                }
+
+                if (path.Length == 0 || !System.IO.File.Exists(path))
+                {
+                    try { ExcelApp.App.StatusBar = "SWP Bridge: this check did not run for the row — nothing to open."; } catch { }
+                    return;
+                }
+                if (path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)) OpenCsvAt(path, Math.Max(1, line));
+                else OpenTextAt(path, Math.Max(1, line));
+            }
+            catch (Exception ex)
+            {
+                try { ExcelApp.App.StatusBar = "SWP Bridge: could not open the source — " + ex.Message; } catch { }
+            }
+        }
+
+        /// <summary>A production CSV in Excel — semicolon-delimited, as the realtime writes them —
+        /// reusing an instance already open; the CSV line is the sheet row.</summary>
+        private static void OpenCsvAt(string path, int line)
+        {
+            dynamic app = ExcelApp.App;
+            dynamic workbook = SwpBridgeCardReader.FindOpenWorkbook(app, path);
+            if (workbook == null)
+            {
+                try { app.StatusBar = "SWP Bridge: opening " + System.IO.Path.GetFileName(path) + "…"; } catch { }
+                try
+                {
+                    // OpenText(Filename, Origin=xlWindows, StartRow, DataType=xlDelimited,
+                    // TextQualifier=double quote, ConsecutiveDelimiter, Tab, Semicolon, Comma, Space, Other)
+                    app.Workbooks.OpenText(path, 2, 1, 1, 1, false, false, true, false, false, false);
+                    workbook = app.ActiveWorkbook;
+                }
+                catch
+                {
+                    workbook = app.Workbooks.Open(path);
+                }
+            }
+            dynamic worksheet = workbook.Worksheets(1);
+            app.Goto(worksheet.Cells(line, 1), true);
+            try { app.StatusBar = false; } catch { }
+        }
+
+        /// <summary>A text export in Notepad++ at the line (-n), falling back to Notepad.</summary>
+        private static void OpenTextAt(string path, int line)
+        {
+            string notepadPlusPlus = FindNotepadPlusPlus();
+            if (notepadPlusPlus != null)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    notepadPlusPlus,
+                    "-n" + line.ToString(System.Globalization.CultureInfo.InvariantCulture) + " \"" + path + "\"")
+                { UseShellExecute = false });
+                return;
+            }
+            try { ExcelApp.App.StatusBar = "SWP Bridge: Notepad++ not found — opening in Notepad (line " + line + ")."; } catch { }
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("notepad.exe", "\"" + path + "\"")
+            { UseShellExecute = false });
+        }
+
+        private static string FindNotepadPlusPlus()
+        {
+            var candidates = new List<string>();
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Notepad++"))
+                {
+                    string dir = key?.GetValue(null) as string;
+                    if (!string.IsNullOrEmpty(dir)) candidates.Add(System.IO.Path.Combine(dir, "notepad++.exe"));
+                }
+            }
+            catch { }
+            string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+            foreach (string root in new[]
+            {
+                Environment.GetEnvironmentVariable("ProgramFiles"),
+                Environment.GetEnvironmentVariable("ProgramFiles(x86)"),
+                string.IsNullOrEmpty(local) ? null : System.IO.Path.Combine(local, "Programs"),
+            })
+                if (!string.IsNullOrEmpty(root)) candidates.Add(System.IO.Path.Combine(root, "Notepad++", "notepad++.exe"));
+            foreach (string candidate in candidates)
+                if (System.IO.File.Exists(candidate)) return candidate;
+            return null;
+        }
+
         /// <summary>The bridge workbook closing ends the session; everything is already on disk.</summary>
         public static void OnWorkbookBeforeClose(Excel.Workbook workbook, ref bool cancel)
         {
             try
             {
                 if (SwpBridgeSession.Current != null && SwpBridgeWorkspace.IsLiveBridgeWorkbook(workbook))
+                {
+                    // The workbook is a view: every decision lives in swp-bridge.json, so Excel's
+                    // own "save changes?" prompt is noise — mark it saved and let it go.
+                    try { workbook.Saved = true; } catch { }
                     SwpBridgeSession.Teardown();
+                }
             }
             catch { }
         }
@@ -266,6 +401,19 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 case SwpBridgeSpineSheet.ColForceIds:
                     overrides.ForceElectricalIds = IsChecked(typed);
                     return true;
+                case SwpBridgeSpineSheet.ColFldMode:
+                {
+                    // Ticked = this row takes the OPPOSITE treatment of the workspace default;
+                    // cleared = it follows the default again (stored as the mode, not as "flip",
+                    // so changing the default later never silently reverses a row's decision).
+                    SwpMismatchMode workspaceDefault = session.Settings.MismatchMode;
+                    overrides.FldMode = IsChecked(typed)
+                        ? (workspaceDefault == SwpMismatchMode.Overwrite
+                            ? SwpMismatchMode.AppendToDescription
+                            : SwpMismatchMode.Overwrite)
+                        : (SwpMismatchMode?)null;
+                    return true;
+                }
                 case SwpBridgeSpineSheet.ColDbIndex:
                     if (typed.Length == 0) { overrides.SwpDbIndex = null; return true; }
                     if (int.TryParse(typed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
@@ -276,6 +424,14 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     RestoreSpineCell(sheet, session, row, column);
                     try { ExcelApp.App.StatusBar = "SWP Bridge: the DB index must be a whole number (empty = AUTO)."; } catch { }
                     return false;
+                case SwpBridgeSpineSheet.ColTrustConfig:
+                    // Same opposite-of-the-default rule as the FLD column, stored as the answer
+                    // itself: an explicit tick also bypasses the default's automatic scope
+                    // (generated + "P*" rows), so the gesture always does something visible.
+                    overrides.TrustConfigDescriptions = IsChecked(typed)
+                        ? !session.Settings.TrustConfigPlant
+                        : (bool?)null;
+                    return true;
                 case SwpBridgeSpineSheet.ColDesc1Override:
                     overrides.Desc1Override = typed;
                     return true;

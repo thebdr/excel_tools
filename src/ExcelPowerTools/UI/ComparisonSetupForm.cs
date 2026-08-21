@@ -496,7 +496,7 @@ namespace ExcelPowerTools.UI
             string validation = ValidateSetup(before, after, output);
             if (validation != null)
             {
-                MessageBox.Show(this, validation, "Exact Compare Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ExcelPowerTools.Interop.Dialogs.Info(validation, "Exact Compare Preview", this);
                 return;
             }
 

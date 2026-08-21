@@ -162,6 +162,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 case SwpField.ExportB: return "Export (B)";
                 case SwpField.AddressG: return "I/O addr (G)";
                 case SwpField.DeviceJ: return "Device (J)";
+                case SwpField.FUnitH: return "FUnit value (H) — overwrite";
+                case SwpField.LocationI: return "Location value (I) — overwrite";
                 case SwpField.TsRefL: return "T.S. ref (L)";
                 case SwpField.Desc1T: return "Description 1 (T)";
                 case SwpField.Desc2U: return "Description 2 (U)";

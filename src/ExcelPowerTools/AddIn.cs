@@ -15,6 +15,10 @@ namespace ExcelPowerTools
 
         public void AutoOpen()
         {
+            // First thing, before any of our windows exists: WinForms text through GDI, not GDI+ —
+            // inside Excel the GDI+ default renders every label jagged (see UI.GdiText).
+            UI.GdiText.MakeDefault();
+
             _app = (Excel.Application)ExcelDnaUtil.Application;
             _app.WorkbookOpen += CsvCommands.OnWorkbookOpen;
             _app.WorkbookBeforeClose += CsvCommands.OnWorkbookBeforeClose;
@@ -23,6 +27,8 @@ namespace ExcelPowerTools
             _app.WorkbookBeforeClose += OnWorkbookBeforeCloseHub;
             _app.SheetActivate += CsvCommands.OnSheetActivate;
             _app.SheetBeforeDelete += CsvCommands.OnSheetBeforeDelete;
+            _app.SheetBeforeDoubleClick += CsvCommands.OnSheetBeforeDoubleClick;   // Index Status cell → reload from disk
+            _app.WindowActivate += CsvCommands.OnWindowActivate;                   // Index rescans on window focus too
 
             // Manual-edit tracking for the unified undo timeline.
             _app.SheetSelectionChange += Interop.ManualEditTracker.OnSelectionChange;
@@ -71,6 +77,8 @@ namespace ExcelPowerTools
             _app.WorkbookBeforeClose -= IoPipeline.SwpBridge.SwpBridgeEditCapture.OnWorkbookBeforeClose;
             _app.SheetActivate -= CsvCommands.OnSheetActivate;
             _app.SheetBeforeDelete -= CsvCommands.OnSheetBeforeDelete;
+            _app.SheetBeforeDoubleClick -= CsvCommands.OnSheetBeforeDoubleClick;
+            _app.WindowActivate -= CsvCommands.OnWindowActivate;
             _app.SheetSelectionChange -= Interop.ManualEditTracker.OnSelectionChange;
             _app.SheetChange -= Interop.ManualEditTracker.OnSheetChange;
             _app.SheetActivate -= Interop.ManualEditTracker.OnSheetActivate;

@@ -139,7 +139,9 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     ((action.Field == SwpField.FormulaQ && row.FormulaQShared) ||
                      (action.Field == SwpField.FormulaR && row.FormulaRShared) ||
                      (action.Field == SwpField.FormulaH && row.FormulaHShared) ||
-                     (action.Field == SwpField.FormulaI && row.FormulaIShared)))
+                     (action.Field == SwpField.FormulaI && row.FormulaIShared) ||
+                     (action.Field == SwpField.FUnitH && row.FormulaHShared) ||
+                     (action.Field == SwpField.LocationI && row.FormulaIShared)))
                 {
                     outcome.Result = SwpActionStatus.Conflict;
                     outcome.Note = "shared formula — " +
@@ -394,6 +396,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 case SwpField.StampAA: return row.StampAA;
                 case SwpField.FormulaH: return row.FormulaH;
                 case SwpField.FormulaI: return row.FormulaI;
+                case SwpField.FUnitH: return row.CachedH;
+                case SwpField.LocationI: return row.CachedI;
                 default: return "";
             }
         }
@@ -413,6 +417,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 case SwpField.StampAA: return 27;
                 case SwpField.FormulaH: return 8;
                 case SwpField.FormulaI: return 9;
+                case SwpField.FUnitH: return 8;
+                case SwpField.LocationI: return 9;
                 case SwpField.HeaderLocationI: return 9;
                 case SwpField.HeaderFormulaI: return 9;
                 default: throw new ArgumentOutOfRangeException(nameof(field));

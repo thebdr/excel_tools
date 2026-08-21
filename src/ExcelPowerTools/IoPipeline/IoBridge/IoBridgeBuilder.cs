@@ -448,6 +448,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
 
             RenderActionHighlights(sheet, map, session);
             ApplyStatusFormats(sheet, map, session, layoutCount, totalRows);
+            OutlineRows(sheet, map, session);
 
             // Widths BEFORE the outline hides: setting ColumnWidth on a hidden column un-hides it,
             // which is exactly how hidden-by-default groups were silently reappearing.
@@ -815,6 +816,98 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             for (int c = 0; c < session.Layout.Columns.Count; c++)
                 if (session.Layout.Columns[c].Def.NormalizedHeader == normalizedKey) return c;
             return -1;
+        }
+
+        // ---- outlines: double-click cells (blue) and virtual twins (red) ----------------------------
+
+        private static readonly int DoubleClickBlue = Rgb(0, 112, 192);
+        private static readonly int VirtualRed = Rgb(200, 30, 30);
+        private const int XlContinuous = 1, XlThin = 2, XlMedium = -4138;
+
+        /// <summary>The IO-side column whose double-click opens the IO list at the row — the user's
+        /// "Functional unit" (column O of the FVZ layout), the mnemonic when a list lacks it.</summary>
+        internal static int IoOpenLayoutColumn(IoBridgeSession session)
+        {
+            int c = LayoutIndexOf(session, "functionalunit");
+            return c >= 0 ? c : LayoutIndexOf(session, "mnemonic");
+        }
+
+        /// <summary>The CSV-side column whose double-click opens the CSV at the record — the user's
+        /// "CSV Card" (column AG of the FVZ layout).</summary>
+        internal static int CsvOpenLayoutColumn(IoBridgeSession session)
+        {
+            int c = LayoutIndexOf(session, CsvCanonical.LayoutKey(CsvCanonical.Card));
+            return c >= 0 ? c : LayoutIndexOf(session, CsvCanonical.LayoutKey(CsvCanonical.Name));
+        }
+
+        /// <summary>
+        /// Blue borders mark the double-clickable cells (IO-open column on rows from the IO list,
+        /// CSV-open column on rows with a record), painted per contiguous run — one COM call each.
+        /// A VIRTUAL TWIN's CSV block gets a red outline: the record carries the mnemonic but
+        /// acquires nothing from the field, and the row action offers to change its type.
+        /// </summary>
+        private static void OutlineRows(dynamic sheet, BridgeSheetMap map, IoBridgeSession session)
+        {
+            try
+            {
+                int ioOpen = IoOpenLayoutColumn(session);
+                int csvOpen = CsvOpenLayoutColumn(session);
+                int csvFirst = -1, csvLast = -1;
+                for (int c = 0; c < session.Layout.Columns.Count; c++)
+                {
+                    if (session.Layout.Columns[c].Def.Side != "CSV") continue;
+                    if (csvFirst < 0) csvFirst = c;
+                    csvLast = c;
+                }
+
+                var ioRuns = new List<(int First, int Last)>();
+                var csvRuns = new List<(int First, int Last)>();
+                var twins = new List<int>();
+                foreach (KeyValuePair<int, BridgeRow> pair in map.RowByWorksheetRow)
+                {
+                    if (pair.Value.IoSourceRow > 0) Extend(ioRuns, pair.Key);
+                    if (pair.Value.Csv != null) Extend(csvRuns, pair.Key);
+                    if (pair.Value.Csv != null && pair.Value.Csv.Virtual) twins.Add(pair.Key);
+                }
+
+                if (ioOpen >= 0)
+                    foreach ((int first, int last) in ioRuns)
+                        Box(sheet.Range(sheet.Cells(first, session.WorksheetColumnOf(ioOpen)),
+                            sheet.Cells(last, session.WorksheetColumnOf(ioOpen))), DoubleClickBlue, XlThin);
+                if (csvOpen >= 0)
+                    foreach ((int first, int last) in csvRuns)
+                        Box(sheet.Range(sheet.Cells(first, session.WorksheetColumnOf(csvOpen)),
+                            sheet.Cells(last, session.WorksheetColumnOf(csvOpen))), DoubleClickBlue, XlThin);
+
+                if (csvFirst >= 0)
+                    foreach (int row in twins)
+                    {
+                        dynamic block = sheet.Range(
+                            sheet.Cells(row, session.WorksheetColumnOf(csvFirst)),
+                            sheet.Cells(row, session.WorksheetColumnOf(csvLast)));
+                        block.BorderAround(XlContinuous, XlMedium, Type.Missing, VirtualRed);
+                    }
+            }
+            catch { }
+        }
+
+        /// <summary>Every border of the range (edges and the lines between cells) in one color.</summary>
+        private static void Box(dynamic range, int color, int weight)
+        {
+            dynamic borders = range.Borders;
+            borders.LineStyle = XlContinuous;
+            borders.Weight = weight;
+            borders.Color = color;
+        }
+
+        /// <summary>Rows arrive sorted by the dictionary's insertion order (top to bottom); adjacent
+        /// rows extend the current run, a gap starts a new one.</summary>
+        private static void Extend(List<(int First, int Last)> runs, int row)
+        {
+            if (runs.Count > 0 && runs[runs.Count - 1].Last == row - 1)
+                runs[runs.Count - 1] = (runs[runs.Count - 1].First, row);
+            else
+                runs.Add((row, row));
         }
 
         /// <summary>Orange over the CSV columns of a header row — the IO/CSV division reads at a glance.</summary>

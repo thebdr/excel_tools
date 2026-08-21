@@ -164,7 +164,8 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             DiagnosticEntry e = Assert.Single(entries);
             Assert.True(e.IsBusModule);
             Assert.Equal(expectedNode, e.Node);
-            Assert.Equal(expectedNode + ".0.0", e.SwpAddress());
+            Assert.Equal("1M." + expectedNode, e.AsiNode);        // no Slot column → line 1
+            Assert.Equal("1M." + expectedNode, e.SwpAddress());   // G gets line.slave, no ".0.0"
         }
 
         [Fact]

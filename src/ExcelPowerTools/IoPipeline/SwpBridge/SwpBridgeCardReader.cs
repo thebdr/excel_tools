@@ -66,6 +66,14 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             return null;
         }
 
+        private static bool IsAllDigits(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            foreach (char c in s)
+                if (c < '0' || c > '9') return false;
+            return true;
+        }
+
         private static void ReadSheet(dynamic sheet, string name, List<IoRowData> rows, List<SwpLogEntry> log)
         {
             long lastRow = RangeHelpers.LastRow(sheet);
@@ -88,6 +96,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             int mnemonic = IoListLogic.FindColumn(headers, "mnemonic");
             int bit = IoListLogic.FindColumn(headers, "bit");
             int id = IoListLogic.FindColumn(headers, "id");
+            int slot = IoListLogic.FindColumn(headers, "slot");
             if (mnemonic < 0 || bit < 0)
             {
                 log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
@@ -107,8 +116,20 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             int pnIp = IoListLogic.FindColumn(headers, "profinet ip");
             int pnName = IoListLogic.FindColumn(headers, "profinet name");
 
+            // The IO list is hierarchical: a bus module's row (numeric ID, Profinet name or a
+            // PA/PW type) is followed by the rows that hang under it — an AS-I gateway's slaves
+            // among them. The context travels down so a slave knows its gateway's node.
+            string moduleNode = "";
             for (int r = 1; r < rowCount; r++)
             {
+                string idText = Cell(r, id).Trim().TrimStart('\'').Trim();
+                string typeText = Cell(r, type).Trim();
+                if (IsAllDigits(idText) &&
+                    (typeText.Equals("PA", StringComparison.OrdinalIgnoreCase) ||
+                     typeText.Equals("PW", StringComparison.OrdinalIgnoreCase) ||
+                     Cell(r, pnName).Trim().Length > 0))
+                    moduleNode = idText;
+
                 string mnemonicText = Cell(r, mnemonic);
                 if (mnemonicText.Trim().Length == 0) continue;
 
@@ -119,6 +140,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     MnemonicCell = mnemonicText,
                     AddressCell = Cell(r, bit),
                     IdCell = Cell(r, id),
+                    SlotCell = Cell(r, slot),
+                    ModuleNode = moduleNode,
                     TypeCell = Cell(r, type),
                     Desc1A = Cell(r, desc1A),
                     Desc1B = Cell(r, desc1B),

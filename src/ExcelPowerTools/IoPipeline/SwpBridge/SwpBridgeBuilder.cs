@@ -25,6 +25,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             List<SwpLogEntry> log = session.BuildLog;
             SwpBridgeDashboard dashboard = session.Dashboard;
 
+            ResolveProductionFiles(session);
+
             dashboard?.PostPhase("Reading the IO list…");
             session.IoRows = SwpBridgeCardReader.Read(app, settings.IoListPath, settings.CardSheets, log);
             if (session.IoRows.Count == 0)
@@ -63,6 +65,37 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
             LoadGlossaries(session);
             RecomputeFromMemory(session);
+        }
+
+        /// <summary>
+        /// One PRODUCTION root → every plant input, by the realtime tree layout. The resolved
+        /// paths land in the settings (and so in the sidecar), so what was actually used is on
+        /// record; a missing input keeps its check off, like an empty per-file path always did.
+        /// </summary>
+        private static void ResolveProductionFiles(SwpBridgeSession session)
+        {
+            SwpBridgeSettings settings = session.Settings;
+            if (string.IsNullOrWhiteSpace(settings.ProductionRoot)) return;
+
+            SwpProductionFiles files = SwpProductionTree.Resolve(
+                settings.ProductionRoot, settings.PlantType, settings.GroupIndex);
+            settings.BusfieldCsvPath = files.Busfield.FullPath;
+            settings.PlantInputsCsvPath = files.PlantInputs.FullPath;
+            settings.DestinationParamsCsvPath = files.DestinationParams.FullPath;
+            settings.SensorCsvPath = files.Sensor.FullPath;
+            settings.StrobeDeviceCsvPath = files.StrobeDevice.FullPath;
+            settings.BusExtendedDiagnosticCsvPath = files.BusExtendedDiagnostic.FullPath;
+            settings.AlarmStringsPaths = new List<string>(files.AlarmStrings);
+
+            if (files.Root.Length == 0)
+            {
+                session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "production root not found: " + settings.ProductionRoot + " — every plant check stays off"));
+                return;
+            }
+            session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Info, "production root: " + files.Root));
+            foreach (string line in files.ReportLines())
+                session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Info, "    " + line));
         }
 
         /// <summary>Parses the optional glossary workbooks into the session baselines.</summary>
@@ -191,7 +224,29 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             }, log);
 
             dashboard?.PostPhase("Checking the formulas…");
-            List<SwpProposedEdit> repairs = SwpFormulaCheck.ProposeRepairs(session.Index, log);
+            // Brutal-overwrite mode writes the IO identity into H/I as plain values: the cleaner
+            // reads those as deliberate, and never queues a repair over a cell this build is
+            // about to overwrite.
+            var deliberate = new Dictionary<(string Sheet, int Row), (string FUnit, string Location)>();
+            var overwriteTargets = new HashSet<string>(StringComparer.Ordinal);
+            // Per ROW, not per workspace: [Overwrite FLD] / [Append FLD] flips individual rows
+            // away from the default, so only the rows actually in overwrite mode are exempted.
+            foreach (SwpSpineRow row in session.Model.Rows)
+            {
+                if (!row.FldOverwriteMode) continue;
+                if (row.Snapshot == null || row.Mapped == null || !row.Mapped.Ok) continue;
+                deliberate[(row.Mapped.Coordinate.SheetName, row.Snapshot.RowNumber)] = (row.Entry.FUnit, row.Entry.Location);
+                foreach (SwpProposedEdit edit in row.Edits)
+                {
+                    if (edit.Field == SwpField.FUnitH) overwriteTargets.Add(edit.Sheet + "|" + edit.RowNumber + "|H");
+                    else if (edit.Field == SwpField.LocationI) overwriteTargets.Add(edit.Sheet + "|" + edit.RowNumber + "|I");
+                }
+            }
+            List<SwpProposedEdit> repairs = SwpFormulaCheck.ProposeRepairs(session.Index, log,
+                deliberate.Count > 0 ? deliberate : null);
+            repairs.RemoveAll(r =>
+                (r.Field == SwpField.FormulaH && overwriteTargets.Contains(r.Sheet + "|" + r.RowNumber + "|H")) ||
+                (r.Field == SwpField.FormulaI && overwriteTargets.Contains(r.Sheet + "|" + r.RowNumber + "|I")));
             if (repairs.Count > 0)
             {
                 session.Model.Edits.AddRange(repairs);
@@ -252,6 +307,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 case SwpField.FormulaR: return row.FormulaR;
                 case SwpField.FormulaH: return row.FormulaH;
                 case SwpField.FormulaI: return row.FormulaI;
+                case SwpField.FUnitH: return row.CachedH;
+                case SwpField.LocationI: return row.CachedI;
                 default: return "";
             }
         }
@@ -295,6 +352,13 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             SwpBridgeAuxSheets.RenderOffsets(workbook);
             SwpBridgeAuxSheets.RenderStrobeTemplates(workbook, session);
             SwpBridgeAuxSheets.RenderHome(workbook, session);
+
+            // The _Preview sheet opens with the workspace (the first previewable row, or the row
+            // the user was previewing across a refresh) — no double-click needed to see it exists.
+            int previewRow = session.PreviewContext?.ModelRow ?? FirstPreviewableRow(session);
+            SwpBridgePreview.Prepare(session, previewRow);
+
+            ColorWorkspaceTabs(workbook);
             try { workbook.Worksheets(SwpBridgeWorkspace.SpineSheetName).Activate(); } catch { }
 
             session.Dashboard?.PostPhase("Ready");
@@ -334,12 +398,43 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             finally { try { app.DisplayAlerts = prevAlerts; } catch { } }
         }
 
+        /// <summary>The first row that actually has an SWP block to preview (matched + mapped).</summary>
+        private static int FirstPreviewableRow(SwpBridgeSession session)
+        {
+            if (session?.Model == null) return -1;
+            for (int i = 0; i < session.Model.Rows.Count; i++)
+            {
+                SwpSpineRow row = session.Model.Rows[i];
+                if (row.Snapshot != null && row.Mapped != null && row.Mapped.Ok) return i;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Sheet-tab colours so the three sheets a user moves between are found by colour, not by
+        /// reading the strip: Home light blue, Workspace orange, _Preview yellow (the same three
+        /// hues the sheets use for their own headers / SWP side / pending cells).
+        /// </summary>
+        private static void ColorWorkspaceTabs(dynamic workbook)
+        {
+            SetTabColor(workbook, SwpBridgeWorkspace.HomeSheetName, 180, 210, 240);   // light blue
+            SetTabColor(workbook, SwpBridgeWorkspace.SpineSheetName, 250, 200, 140);  // orange
+            SetTabColor(workbook, SwpBridgeWorkspace.PreviewSheetName, 255, 235, 156);// yellow
+        }
+
+        private static void SetTabColor(dynamic workbook, string sheetName, int r, int g, int b)
+        {
+            dynamic sheet = SwpBridgeQueueSheet.FindSheet(workbook, sheetName);
+            if (sheet == null) return;   // _Preview may be absent when nothing is previewable
+            try { sheet.Tab.Color = r | (g << 8) | (b << 16); } catch { }
+        }
+
         // ---- pieces -------------------------------------------------------------------------
 
         private static void AnnotateCoherence(SwpBridgeSession session, List<SwpLogEntry> log)
         {
             SwpBridgeSettings settings = session.Settings;
-            CsvDocument plantInputs = null, busfield = null;
+            CsvDocument plantInputs = null, busfield = null, busExtended = null;
             if (File.Exists(settings.PlantInputsCsvPath))
             {
                 session.Dashboard?.PostPhase("Checking Plant_Inputs…");
@@ -349,6 +444,11 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             {
                 session.Dashboard?.PostPhase("Checking the busfield…");
                 busfield = LoadCsv(settings.BusfieldCsvPath, log);
+            }
+            if (File.Exists(settings.BusExtendedDiagnosticCsvPath))
+            {
+                session.Dashboard?.PostPhase("Checking BUS_ExtendedDiagnostic…");
+                busExtended = LoadCsv(settings.BusExtendedDiagnosticCsvPath, log);
             }
 
             List<SwpAlarmString> alarms = null;
@@ -364,9 +464,9 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     session.AlarmStringsFiles.Count + " file(s)"));
             }
 
-            if (plantInputs != null || busfield != null || alarms != null)
+            if (plantInputs != null || busfield != null || alarms != null || busExtended != null)
                 SwpCoherence.Annotate(session.Model, plantInputs, busfield, settings.PlantType, log,
-                    alarms, settings.FirstLineId, settings.GroupIndex, session.IndexRules);
+                    alarms, settings.FirstLineId, settings.GroupIndex, session.IndexRules, busExtended);
         }
 
         private static CsvDocument LoadCsv(string path, List<SwpLogEntry> log)
@@ -439,14 +539,14 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 })
                 {
                     owner.Show();
-                    choice = System.Windows.Forms.MessageBox.Show(owner,
+                    choice = Dialogs.RetryCancel(
                         "The " + label + " could not be read:\n" + path +
                         (string.IsNullOrEmpty(error) ? "" : "\n\n" + error) +
                         "\n\nIt may be open in Excel or locked by another program — close it " +
                         "there, then press Retry.",
-                        "SWP Bridge",
-                        System.Windows.Forms.MessageBoxButtons.RetryCancel,
-                        System.Windows.Forms.MessageBoxIcon.Warning);
+                        "SWP Bridge", owner)
+                        ? System.Windows.Forms.DialogResult.Retry
+                        : System.Windows.Forms.DialogResult.Cancel;
                 }
                 if (choice != System.Windows.Forms.DialogResult.Retry)
                     throw new OperationCanceledException("the " + label + " stayed unreadable");

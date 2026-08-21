@@ -24,7 +24,14 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
         // ---- self-contained repairs ---------------------------------------------------------
 
-        public static List<SwpProposedEdit> ProposeRepairs(SwpWorkbookIndex index, List<SwpLogEntry> log)
+        /// <summary>
+        /// <paramref name="deliberateIdentities"/> — (sheet, row) → the IO list's (FUnit, Location)
+        /// of the signal living on that SWP row — marks the plain values brutal-overwrite mode
+        /// writes into H/I as DELIBERATE: a value equal to that identity is not a pasted accident
+        /// and gets no repair. Null outside overwrite mode.
+        /// </summary>
+        public static List<SwpProposedEdit> ProposeRepairs(SwpWorkbookIndex index, List<SwpLogEntry> log,
+            IReadOnlyDictionary<(string Sheet, int Row), (string FUnit, string Location)> deliberateIdentities = null)
         {
             var edits = new List<SwpProposedEdit>();
             if (index == null) return edits;
@@ -36,12 +43,15 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
                 foreach (SwpRowSnapshot row in sheet.BitRows)
                 {
+                    (string FUnit, string Location) identity = ("", "");
+                    bool deliberate = deliberateIdentities != null &&
+                        deliberateIdentities.TryGetValue((sheet.SheetName, row.RowNumber), out identity);
                     CheckRowFormula(sheet, row, edits, log,
                         SwpField.FormulaH, row.FormulaH, row.FormulaHShared, row.HasCellH,
-                        row.CachedH, "H", row.BlockFUnit);
+                        row.CachedH, "H", row.BlockFUnit, deliberate ? identity.FUnit : null);
                     CheckRowFormula(sheet, row, edits, log,
                         SwpField.FormulaI, row.FormulaI, row.FormulaIShared, row.HasCellI,
-                        row.CachedI, "I", row.BlockLocation);
+                        row.CachedI, "I", row.BlockLocation, deliberate ? identity.Location : null);
                 }
 
                 foreach (SwpBlockHeader header in sheet.BlockHeaders)
@@ -117,7 +127,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         private static void CheckRowFormula(SwpSheetIndex sheet, SwpRowSnapshot row,
             List<SwpProposedEdit> edits, List<SwpLogEntry> log, SwpField field,
             string formula, bool isShared, bool hasCell, string cached,
-            string columnLetter, string headerValue)
+            string columnLetter, string headerValue, string deliberateValue = null)
         {
             // A block whose header carries no FUnit/Location is a virtual object (SORTERSTATE,
             // TRAIN, …): its rows legitimately hold nothing in that column, and a repair formula
@@ -125,6 +135,12 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             if ((headerValue ?? "").Trim().Length == 0) return;
 
             if (RowFormulaIsHealthy(formula, isShared, row.BlockHeaderRow, columnLetter)) return;
+
+            // Brutal-overwrite mode writes the IO identity into the row's own H/I: a plain value
+            // equal to that identity is deliberate, not a pasted accident.
+            if (!isShared && hasCell && (formula ?? "").Length == 0 && deliberateValue != null &&
+                string.Equals((cached ?? "").Trim(), deliberateValue.Trim(), StringComparison.Ordinal))
+                return;
 
             string wanted = columnLetter + row.BlockHeaderRow.ToString(CultureInfo.InvariantCulture);
 

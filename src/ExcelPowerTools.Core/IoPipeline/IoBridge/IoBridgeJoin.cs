@@ -31,6 +31,11 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
         public string[] Fields;
         public bool Disabled;   // '#' marker (first record)
 
+        /// <summary>The record is a VIRTUAL twin of the IO point (type 5/6/9/10 carrying the same
+        /// mnemonic): it looks like the signal is there, but it acquires nothing from the field.
+        /// Bound so the row shows it — and offers "change type" — instead of integrating a double.</summary>
+        public bool Virtual;
+
         public List<int> RecordIndexes = new List<int>();
         public List<string[]> AllFields = new List<string[]>();
 
@@ -48,6 +53,11 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
         public CsvBinding Csv;
         public string MatchVerdict = "";     // "" agree · "n/m" ratio · "missing" spine row without a CSV row
         public string RowLabel = "";         // "Signal" / "Module" / "CSV-only" (+ " · disabled" / " · virtual")
+
+        /// <summary>The parts of the IO-list mnemonic cell the exclude regex filtered OUT of the
+        /// comparison ("/"-joined, original spelling) — generator keys riding along a real mnemonic
+        /// ("BUS_CABINETAL00159/SAFETY_NUMDOORS_16"). Kept so an IO-side write puts them back.</summary>
+        public string ExcludedMnemonics = "";
 
         private static readonly string[] Empty = new string[0];
     }
@@ -262,6 +272,7 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
             public string ClaimKey;          // the address/node key its records live under
             public List<string> NameKeys;    // the row's mnemonic keys
             public bool Excluded;
+            public bool VirtualTwin;         // the claim is a virtual record carrying the row's name
             public List<int> Claimed = new List<int>();
         }
 
@@ -305,14 +316,22 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
             {
                 string[] fields = card.AllRows[r] ?? new string[0];
                 string rawBit = At(fields, iBit);
-                string mnemonic = At(fields, iMnemonic).Trim();
+                string rawMnemonic = At(fields, iMnemonic).Trim();
                 string id = At(fields, iId).Trim();
+
+                // The exclude regex filters MNEMONICS, not rows. A cell may carry a generator key
+                // beside a real mnemonic ("BUS_CABINETAL00159/SAFETY_NUMDOORS_16" — the key tells
+                // another tool to generate 16 door blocks at that node, in plain mnemonic syntax);
+                // the key drops out of the comparison, the mnemonic beside it still joins. Only a
+                // cell whose EVERY part matches is excluded whole.
+                FilterMnemonics(rawMnemonic, excludeIo, out string mnemonic, out string excludedParts, out bool allExcluded);
 
                 var row = new BridgeRow
                 {
                     IoSourceRow = card.FirstRowNumber + r,
                     RawBitText = rawBit,
                     IoValues = fields,
+                    ExcludedMnemonics = excludedParts,
                 };
                 PendingEntry entry;
 
@@ -359,10 +378,14 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                     continue;   // decoration/blank row — not part of the joinable spine
                 }
 
-                if (excludeIo != null && mnemonic.Length > 0 && excludeIo.IsMatch(mnemonic))
+                if (allExcluded)
                 {
                     entry.Excluded = true;
                     row.RowLabel += " · excluded";
+                }
+                else if (excludedParts.Length > 0)
+                {
+                    row.RowLabel += " · filtered";
                 }
 
                 if (canJudgeUnused &&
@@ -386,21 +409,37 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                 if (!entry.Excluded && entry.Claimed.Count == 0)
                     entry.Claimed.AddRange(entry.Side.ClaimAllRemaining(entry.ClaimKey));
 
-            // Phase 3 — opted-in virtuals attach BY NAME wherever the mnemonic appears.
+            // Phase 3 — opted-in virtuals (the compare-virtuals regex: virtuals that are EXPECTED to
+            // mirror IO-list entries, the CLASSDIAGAL pattern) attach BY NAME wherever the mnemonic
+            // appears, and read as ordinary matches.
             foreach (PendingEntry entry in entries)
                 if (!entry.Excluded)
                     entry.Claimed.AddRange(entry.Side.ClaimVirtualsByName(entry.NameKeys));
 
+            // Phase 3b — a signal STILL without a record whose mnemonic some other VIRTUAL record
+            // carries (type 5/6/9/10): that record is its twin. It binds FLAGGED — the point looks
+            // present but acquires nothing from the field — so the row shows the twin and offers a
+            // type change instead of integrating a double.
             foreach (PendingEntry entry in entries)
             {
-                if (!entry.Excluded) Bind(entry.Row, entry.Side, entry.Claimed, entry.Row.Signal.Mnemonic);
+                if (entry.Excluded || entry.Claimed.Count > 0 || entry.Row.Kind != BridgeRowKind.Signal) continue;
+                List<int> twins = entry.Side.ClaimVirtualsByName(entry.NameKeys, anyVirtual: true);
+                if (twins.Count == 0) continue;
+                entry.Claimed.AddRange(twins);
+                entry.VirtualTwin = true;
+            }
+
+            foreach (PendingEntry entry in entries)
+            {
+                if (!entry.Excluded) Bind(entry.Row, entry.Side, entry.Claimed, entry.Row.Signal.Mnemonic, entry.VirtualTwin);
                 sheet.SpineRows.Add(entry.Row);
                 Register(model, entry.Row);
             }
             return sheet;
         }
 
-        private static void Bind(BridgeRow row, CsvSideIndex side, List<int> recordIdxs, string ioMnemonic)
+        private static void Bind(BridgeRow row, CsvSideIndex side, List<int> recordIdxs, string ioMnemonic,
+            bool virtualTwin = false)
         {
             if (recordIdxs == null || recordIdxs.Count == 0)
             {
@@ -436,6 +475,14 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
 
             string csvNames = row.CsvValues[CsvCanonical.Name];
             row.MatchVerdict = IoListLogic.MatchRatio(csvNames, ioMnemonic, ioMnemonic);
+
+            if (virtualTwin)
+            {
+                // Never reads as a clean match: the names agree, the acquisition does not exist.
+                binding.Virtual = true;
+                row.RowLabel += " · virtual twin";
+                row.MatchVerdict = "virtual";
+            }
         }
 
         private static string[] JoinCanonical(CsvSideIndex side, List<int> recordIdxs)
@@ -526,6 +573,29 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
             index >= 0 && index < fields.Length && fields[index] != null ? fields[index] : "";
 
         /// <summary>
+        /// Splits a "/"-joined mnemonic cell into the parts that enter the comparison and the parts
+        /// the exclude regex filters out (original spelling, original order within each group).
+        /// <paramref name="allExcluded"/> is true when the cell had parts and none survived — the
+        /// row is then ignored whole and keeps its full name for display and identity.
+        /// </summary>
+        internal static void FilterMnemonics(string cell, Regex exclude,
+            out string kept, out string excluded, out bool allExcluded)
+        {
+            var keptParts = new List<string>();
+            var droppedParts = new List<string>();
+            foreach (string raw in (cell ?? "").Split('/'))
+            {
+                string part = raw.Trim();
+                if (part.Length == 0) continue;
+                if (exclude != null && exclude.IsMatch(part)) droppedParts.Add(part);
+                else keptParts.Add(part);
+            }
+            allExcluded = keptParts.Count == 0 && droppedParts.Count > 0;
+            kept = allExcluded ? (cell ?? "").Trim() : string.Join("/", keptParts);
+            excluded = string.Join("/", droppedParts);
+        }
+
+        /// <summary>
         /// One CSV file's records indexed for the join, tracking which records a spine row claimed.
         /// Virtual rows (type 5/6) are indexed for the CSV-only bucket but never join by address —
         /// their address fields are frequently stale copy-paste values.
@@ -539,6 +609,7 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
             private readonly Dictionary<string, List<int>> _byAddress = new Dictionary<string, List<int>>();
             private readonly Dictionary<string, List<int>> _byNode = new Dictionary<string, List<int>>();
             private readonly Dictionary<string, List<int>> _virtualByName = new Dictionary<string, List<int>>();
+            private readonly Dictionary<string, List<int>> _anyVirtualByName = new Dictionary<string, List<int>>();
             private readonly List<Row> _rows = new List<Row>();
 
             private sealed class Row
@@ -584,8 +655,10 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                     if (IoListLogic.IsVirtualType(type))
                     {
                         row.Virtual = true;
-                        // Opted-in virtuals (the CLASSDIAGAL pattern) join BY NAME — their address
-                        // fields stay meaningless.
+                        // Every virtual is a twin candidate by name (their address fields stay
+                        // meaningless); opted-in ones (the CLASSDIAGAL pattern) also join BY NAME
+                        // next to real records.
+                        if (name.Length > 0) Add(_anyVirtualByName, row.NameKey, _rows.Count);
                         if (includeVirtuals != null && name.Length > 0 && includeVirtuals.IsMatch(name))
                             Add(_virtualByName, row.NameKey, _rows.Count);
                     }
@@ -641,14 +714,16 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                 return taken;
             }
 
-            /// <summary>Pass 3: opted-in virtual records carrying any of the row's mnemonics.</summary>
-            public List<int> ClaimVirtualsByName(List<string> nameKeys)
+            /// <summary>Pass 3: opted-in virtual records carrying any of the row's mnemonics —
+            /// or, with <paramref name="anyVirtual"/>, EVERY virtual record that does (the twins).</summary>
+            public List<int> ClaimVirtualsByName(List<string> nameKeys, bool anyVirtual = false)
             {
                 var taken = new List<int>();
                 if (nameKeys == null) return taken;
+                Dictionary<string, List<int>> index = anyVirtual ? _anyVirtualByName : _virtualByName;
                 foreach (string key in nameKeys)
                 {
-                    if (!_virtualByName.TryGetValue(key, out List<int> list)) continue;
+                    if (!index.TryGetValue(key, out List<int> list)) continue;
                     foreach (int rowIdx in list)
                     {
                         Row row = _rows[rowIdx];

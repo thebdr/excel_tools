@@ -14,8 +14,10 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
 
         private static readonly (string Caption, string Macro)[] Buttons =
         {
-            ("IO Bridge: row actions…", "PT_XIoBridgeRowActions"),
-            ("IO Bridge: expanded view", "PT_XIoBridgeExpand"),
+            // The macro names must match the [ExcelCommand(Name = …)] attributes in IoBridgeCommands —
+            // the IO Pipeline rename dropped the PT_X prefix and these stayed behind.
+            ("IO Bridge: row actions…", "PT_IoBridgeRowActions"),
+            ("IO Bridge: expanded view", "PT_IoBridgeExpand"),
         };
 
         public static void Install()

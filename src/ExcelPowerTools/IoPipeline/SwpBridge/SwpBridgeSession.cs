@@ -140,5 +140,19 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             try { session.Dashboard?.CloseFromExcel(); } catch { }
             session.Dashboard = null;
         }
+
+        /// <summary>
+        /// Retires the session's runtime state (dashboard, the chained sheet-exclusion) but KEEPS
+        /// the workbook and its workspace id live — a reconfigure via Setup rebuilds into the same
+        /// workbook, so it is never closed. Closing the bridge's only workbook is what made Excel
+        /// quit on a settings change.
+        /// </summary>
+        public void RetireForRebuild()
+        {
+            ManualEditTracker.SheetExclusion = _previousSheetExclusion;
+            try { Dashboard?.CloseFromExcel(); } catch { }
+            Dashboard = null;
+            if (ReferenceEquals(Current, this)) Current = null;
+        }
     }
 }

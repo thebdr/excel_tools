@@ -102,8 +102,8 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
 
             AddRegexRow(layout, 5, "Compare virtuals", _virtualInclude,
                 "regex — VIRTUAL signals (types 5/6/9/10) whose mnemonic matches join by name, e.g. ^CLASSDIAGAL");
-            AddRegexRow(layout, 6, "Exclude IO rows", _excludeMnemonics,
-                "regex — IO-list rows whose mnemonic matches are shown but ignored by the comparison");
+            AddRegexRow(layout, 6, "Exclude mnemonics", _excludeMnemonics,
+                "regex — IO-list MNEMONICS that match drop out of the comparison (generator keys beside a real one, e.g. ^SAFETY_NUMDOORS); a cell whose every mnemonic matches is ignored whole");
 
             _hint.Dock = DockStyle.Fill;
             _hint.Height = 34;
@@ -121,10 +121,29 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
 
             Controls.Add(layout);
+            ExcelPowerTools.UI.GdiText.Apply(this);   // GDI text, like the native controls
             AcceptButton = _ok;
             CancelButton = cancel;
 
-            _sheets.ItemCheck += (s, e) => BeginInvoke(new Action(Revalidate));
+            // ItemCheck also fires for Items.Add(name, isChecked: true) during the constructor prefill,
+            // before the handle exists — BeginInvoke would throw and abort the check before it is stored.
+            _sheets.ItemCheck += (s, e) => { if (IsHandleCreated) BeginInvoke(new Action(Revalidate)); };
+
+            // Long paths show their tail: caret at the end and the view scrolled there whenever
+            // code fills a box (they are read-only, so TextChanged only ever comes from code).
+            foreach (TextBox box in new[] { _ioList, _inputs, _outputs })
+            {
+                box.HandleCreated += (s, e) => { var b = (TextBox)s; b.SelectionStart = b.Text.Length; b.ScrollToCaret(); };
+                box.TextChanged += (s, e) => { var b = (TextBox)s; b.SelectionStart = b.Text.Length; b.ScrollToCaret(); };
+            }
+            Shown += (s, e) =>
+            {
+                foreach (TextBox box in new[] { _ioList, _inputs, _outputs })
+                {
+                    box.SelectionStart = box.Text.Length;
+                    box.ScrollToCaret();
+                }
+            };
             FormClosing += OnClosingCollect;
 
             // Registry-remembered paths pre-populate the pickers.

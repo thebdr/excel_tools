@@ -501,51 +501,41 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
         // ---- Home ---------------------------------------------------------------------------
 
+        private static readonly int HomePendingYellow = Rgb(255, 235, 156);
+        private static readonly int HomeConflictRed = Rgb(255, 199, 206);
+        private static readonly int HomeExternalBlue = Rgb(221, 235, 247);
+        private static readonly int HomeSwpOrange = Rgb(250, 200, 140);
+        private static readonly int HomeVerdictGreen = Rgb(0x00, 0xCC, 0x5C);
+        private static readonly int HomeVerdictRed = Rgb(200, 30, 30);
+        private static readonly int HomeVerdictOrange = Rgb(200, 120, 0);
+        private const int XlTop = -4160;
+
+        /// <summary>
+        /// The Home sheet: title + facts, the six buttons, then the four-step loop as a strip,
+        /// a legend with the real swatches, the sheet map with jump links, the double-click
+        /// gestures as a table, and the edits that stick. Tables over prose — the sheet is read
+        /// in Excel, where cells scan and paragraphs don't.
+        /// </summary>
         public static void RenderHome(dynamic workbook, SwpBridgeSession session)
         {
             dynamic sheet = EnsureSheet(workbook, SwpBridgeWorkspace.HomeSheetName);
             sheet.Cells.Clear();
             try { sheet.Buttons().Delete(); } catch { }
             try { sheet.Move(workbook.Worksheets(1)); } catch { }   // first tab
-
-            var lines = new (int Row, int Col, string Text, bool Bold)[]
+            try
             {
-                (1, 1, "SWP Bridge", true),
-                (2, 1, session.Settings.SwpFileName + " · " + session.Settings.PlantType +
-                       " · version " + session.Settings.CurrentVersionFolder +
-                       " · " + (session.Settings.ApplyToVersionFolder
-                           ? "apply creates a NEW dated version folder"
-                           : "apply writes IN PLACE (with .bak)"), false),
-
-                (8, 1, "The workflow", true),
-                (9, 1, "1.  The Workspace sheet holds one row per diagnostic mnemonic: the IO-list side, the computed SWP coordinate,", false),
-                (10, 1, "     the SWP's current values and — only where something would change — the proposed values (▸ columns).", false),
-                (11, 1, "2.  Review: green = up to date, red = did not resolve, orange = FU/Location mismatch; the Plant_Inputs / Busfield / Alarm strings columns carry the coherence verdicts.", false),
-                (12, 1, "     Blue-bordered cells react to a double-click: Verdict/Coordinate preview the SWP block, Row opens the IO list at that row, SWP row opens the SWP there.", false),
-                (13, 1, "3.  Steer with the [bracketed] override columns (they persist per mnemonic): mark a FU/Location mismatch", false),
-                (14, 1, "     deliberate ([Mismatch OK] silences its warning), reroute the DB index, force device ids onto belts, or override a description outright.", false),
-                (15, 1, "4.  The _Queue lists every pending write — double-click Include (☑/☐) to keep one out of the apply.", false),
-                (16, 1, "     Broken formulas (pasted values over H/I, lost header locations) arrive there too, as repairs.", false),
-                (17, 1, "5.  Apply patches the SWP file headlessly: three-way checked, verified before written, atomic with .bak;", false),
-                (18, 1, "     the workspace then rebuilds to show the new reality.", false),
-
-                (19, 1, "Colors", true),
-                (20, 1, "yellow ▸ cell = pending write · red = conflict (the file moved) · red T.S. ref = missing (mandatory for IO-list alarms) · blue = already there · orange headers = SWP side · blue borders = double-clickable", false),
-
-                (22, 1, "Sheets", true),
-                (23, 1, "_Queue the pending writes · _Log every finding with jump links · _Dictionary description find→replace", false),
-                (24, 1, "_Glossary the session-relevant translation pairs (disable ☑/☐, edit, add) — the glossary drives Description 2, the bus-failure texts and the T.S. Ref cards · _TSRef the card lookup (double-click a T.S. ref cell)", false),
-                (25, 1, "_Offsets the index rules per plant type and object — mnemonic → table entry → exported OPC tag (global, seeded from the official rules v93) · _StrobeTemplates the UPS strobe blocks", false),
-                (26, 1, "_Preview the SWP block of the last double-clicked row (toggle \"show full block\" for every pending update)", false),
-
-                (28, 1, "Nothing touches the SWP until Apply. Decisions live in swp-bridge.json at the system root.", false),
-            };
-            foreach (var line in lines)
-            {
-                sheet.Cells(line.Row, line.Col).Value = line.Text;
-                if (line.Bold) sheet.Cells(line.Row, line.Col).Font.Bold = true;
+                sheet.Columns(1).ColumnWidth = 30;
+                sheet.Columns(2).ColumnWidth = 38;
+                sheet.Columns(3).ColumnWidth = 38;
+                sheet.Columns(4).ColumnWidth = 38;
             }
+            catch { }
+
+            SwpBridgeSettings s = session.Settings;
+            Put(sheet, 1, 1, "SWP Bridge", true);
             sheet.Cells(1, 1).Font.Size = 16;
+            Put(sheet, 2, 1, s.SwpFileName + " · " + s.PlantType + " · version " + s.CurrentVersionFolder + " · " +
+                (s.ApplyToVersionFolder ? "apply creates a NEW dated version folder" : "apply writes IN PLACE (with .bak)"));
 
             // Buttons lay out in fixed pixel slots from the left margin — anchoring them to
             // cells made them overlap as soon as the column widths disagreed.
@@ -555,6 +545,161 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             AddButton(sheet, 4, 3, "Dashboard", "PT_SwpBridgeDashboard");
             AddButton(sheet, 6, 0, "Clear history", "PT_SwpBridgeClearHistory");
             AddButton(sheet, 6, 1, "Setup…", "PT_SwpBridgeOpen");
+
+            // ---- the loop: four steps across ----
+            int row = 8;
+            Put(sheet, row++, 1, "The loop", true);
+            string[] titles = { "1 · Review", "2 · Inspect", "3 · Steer", "4 · Apply" };
+            string[] bodies =
+            {
+                "Workspace: one row per diagnostic mnemonic — the IO side, the computed coordinate, the SWP's " +
+                "current values and, only where something would change, the ▸ proposed ones. Verdict green = up " +
+                "to date, red = unresolved, orange = FU/Location mismatch; Plant_Inputs / Busfield / Alarm strings " +
+                "carry the coherence verdicts.",
+                "Double-click the blue-bordered cells. Verdict or Coordinate previews the SWP block with the " +
+                "after-recalc texts; Row opens the IO list at that row; SWP row opens the SWP there; a T.S. ref " +
+                "opens the card lookup.",
+                "The [bracketed] override columns persist per mnemonic: [Mismatch OK] silences a deliberate " +
+                "mismatch, [DB index] reroutes a row, [Force IDs] puts device ids on belts, [Desc 1] / [Desc 2] " +
+                "override a text outright. Two columns name the OPPOSITE of the workspace default, because " +
+                "that is what ticking them does: the FLD column ([Overwrite FLD] / [Append FLD]) flips where " +
+                "ONE row's identity lands, and the description column ([Keep CONFIG text] / [Write IO text]) " +
+                "flips whether the bridge's composed text is added on top of CONFIG_PLANT's. " +
+                "_Glossary Use ☑/☐ and _Dictionary edits take effect on Refresh.",
+                "_Queue lists every pending write and formula repair — double-click Include to keep one out. " +
+                "Apply patches the SWP headlessly: three-way checked, verified before written, atomic with .bak; " +
+                "then the workspace rebuilds to show the new reality.",
+            };
+            for (int i = 0; i < titles.Length; i++)
+            {
+                Put(sheet, row, i + 1, titles[i], true);
+                sheet.Cells(row, i + 1).Interior.Color = HeaderBlue;
+            }
+            row++;
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                dynamic cell = sheet.Cells(row, i + 1);
+                cell.Value = bodies[i];
+                cell.WrapText = true;
+                cell.VerticalAlignment = XlTop;
+            }
+            try { sheet.Rows(row).RowHeight = 112; } catch { }
+            row += 2;
+
+            // ---- legend with the real swatches ----
+            Put(sheet, row++, 1, "Legend", true);
+            Swatch(sheet, row++, HomePendingYellow, "▸ cell with a pending write");
+            Swatch(sheet, row++, HomeConflictRed, "conflict — the file moved under the queue; a red T.S. ref is missing (mandatory for IO-list alarms)");
+            Swatch(sheet, row++, HomeExternalBlue, "already in the file (applied externally)");
+            Swatch(sheet, row++, HeaderBlue, "blue headers = columns from the IO list");
+            Swatch(sheet, row++, SwpBridgeSpineSheet.CheckHeaderLavender, "lavender headers = the checked production files (Plant_Inputs, Busfield, alarm strings, BUS ext. diag)");
+            Swatch(sheet, row++, HomeSwpOrange, "orange headers = the SWP side (FU / Loc read \"io / swp\" when the two sides differ)");
+            FontSwatch(sheet, row++, "up to date", HomeVerdictGreen, "verdict: the SWP row already matches");
+            FontSwatch(sheet, row++, "unresolved", HomeVerdictRed, "verdict: unresolved · invalid · duplicate — nothing is queued for the row");
+            FontSwatch(sheet, row++, "label mismatch", HomeVerdictOrange, "verdict: FU/Location differs — warned, then treated per the setup rule");
+            Put(sheet, row, 1, "double-click");
+            SwpBridgeSpineSheet.MarkDoubleClickable(sheet.Cells(row, 1));
+            Put(sheet, row++, 2, "blue border = the cell reacts to a double-click");
+            row++;
+
+            // ---- sheet map with jump links ----
+            Put(sheet, row++, 1, "Sheets", true);
+            var sheetMap = new (string Name, string Purpose)[]
+            {
+                (SwpBridgeWorkspace.SpineSheetName, "the spine — one row per mnemonic, overrides included"),
+                (SwpBridgeWorkspace.QueueSheetName, "the pending writes and repairs (Include ☑/☐)"),
+                (SwpBridgeWorkspace.LogSheetName, "every finding, with a jump link to its row"),
+                (SwpBridgeWorkspace.PreviewSheetName, "the SWP block of the last double-clicked row (toggle \"show full block\")"),
+                (SwpBridgeWorkspace.GlossarySheetName, "the session-relevant translation pairs (Use ☑/☐, edit, add) — drives Description 2, the bus-failure texts and the T.S. cards"),
+                (SwpBridgeWorkspace.TsRefSheetName, "the card lookup — one row per T.S. code with its English descriptors"),
+                (SwpBridgeWorkspace.DictionarySheetName, "description find → replace"),
+                (SwpBridgeWorkspace.OffsetsSheetName, "the index rules per plant type and object — mnemonic → table entry → exported OPC tag (global, seeded from the official rules v93)"),
+                (SwpBridgeWorkspace.StrobeSheetName, "the UPS strobe-device blocks"),
+            };
+            foreach (var entry in sheetMap)
+            {
+                SheetLink(workbook, sheet, row, entry.Name);
+                Put(sheet, row, 2, entry.Purpose);
+                row++;
+            }
+            row++;
+
+            // ---- the double-click gestures ----
+            Put(sheet, row++, 1, "Double-clicks", true);
+            string[] gestureHeaders = { "Where", "Cell", "What happens" };
+            for (int i = 0; i < gestureHeaders.Length; i++)
+            {
+                Put(sheet, row, i + 1, gestureHeaders[i], true);
+                sheet.Cells(row, i + 1).Interior.Color = HeaderBlue;
+            }
+            row++;
+            var gestures = new (string Where, string Cell, string What)[]
+            {
+                (SwpBridgeWorkspace.SpineSheetName, "Verdict · Coordinate", "previews the SWP block in " + SwpBridgeWorkspace.PreviewSheetName),
+                (SwpBridgeWorkspace.SpineSheetName, "Row", "opens the IO list at that row"),
+                (SwpBridgeWorkspace.SpineSheetName, "SWP row", "opens the SWP at that row"),
+                (SwpBridgeWorkspace.SpineSheetName, "T.S. ref (now · new)", "opens the " + SwpBridgeWorkspace.TsRefSheetName + " card lookup"),
+                (SwpBridgeWorkspace.SpineSheetName, "Plant_Inputs · Busfield · Alarm strings · BUS ext. diag", "opens that document at the matched line (.csv in Excel, .txt in Notepad++)"),
+                (SwpBridgeWorkspace.QueueSheetName, "Include", "toggles ☑/☐ — ☐ keeps the write out of Apply"),
+                (SwpBridgeWorkspace.GlossarySheetName, "Use", "toggles ☑/☐ — ☐ disables the pair for this system"),
+                (SwpBridgeWorkspace.PreviewSheetName, "first row", "toggles \"show full block\" / pending rows only"),
+                (SwpBridgeWorkspace.PreviewSheetName, "SWP row", "opens the SWP at that row"),
+                ("Dashboard", "sheet row · finding", "filters the Workspace to that sheet / jumps to the row"),
+            };
+            foreach (var gesture in gestures)
+            {
+                Put(sheet, row, 1, gesture.Where);
+                Put(sheet, row, 2, gesture.Cell);
+                Put(sheet, row, 3, gesture.What);
+                row++;
+            }
+            row++;
+
+            // ---- edits that stick ----
+            Put(sheet, row++, 1, "Edits that stick", true);
+            Put(sheet, row++, 1, "The [bracketed] override columns on the Workspace · _Glossary Use and texts · _Dictionary rows · _Offsets numbers · _StrobeTemplates blocks — all persist and apply on Refresh. Typing anywhere else reverts.");
+            row++;
+            Put(sheet, row, 1, "Nothing touches the SWP until Apply queue. Decisions live in swp-bridge.json at the system root.");
+        }
+
+        private static void Put(dynamic sheet, int row, int col, string text, bool bold = false)
+        {
+            dynamic cell = sheet.Cells(row, col);
+            cell.Value = text;
+            if (bold) cell.Font.Bold = true;
+        }
+
+        private static void Swatch(dynamic sheet, int row, int color, string meaning)
+        {
+            try { sheet.Cells(row, 1).Interior.Color = color; } catch { }
+            Put(sheet, row, 2, meaning);
+        }
+
+        private static void FontSwatch(dynamic sheet, int row, string sample, int color, string meaning)
+        {
+            Put(sheet, row, 1, sample);
+            try { sheet.Cells(row, 1).Font.Color = color; } catch { }
+            Put(sheet, row, 2, meaning);
+        }
+
+        /// <summary>A jump link for a sheet that exists; the on-demand ones (_Preview, _TSRef)
+        /// render as plain names until their first double-click creates them.</summary>
+        private static void SheetLink(dynamic workbook, dynamic sheet, int row, string name)
+        {
+            bool exists = SwpBridgeQueueSheet.FindSheet(workbook, name) != null;
+            if (!exists)
+            {
+                Put(sheet, row, 1, name + "  (on demand)");
+                return;
+            }
+            try
+            {
+                sheet.Cells(row, 1).Formula = "=HYPERLINK(\"#'" + name + "'!A1\",\"" + name + "\")";
+            }
+            catch
+            {
+                Put(sheet, row, 1, name);
+            }
         }
 
         private const double ButtonWidth = 118.0;

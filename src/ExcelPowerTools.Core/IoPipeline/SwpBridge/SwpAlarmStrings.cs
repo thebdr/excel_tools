@@ -17,6 +17,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public bool IsZoneAlarm;
         public string Description1 = "";
         public string Description2 = "";
+        public string SourceLabel = "";   // the Alarms_*.txt file name
+        public int Line;                  // 1-based line in that file
     }
 
     /// <summary>
@@ -66,6 +68,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 alarm.IsWarning = alarm.Mnemonic.Contains("WR");
                 alarm.Description1 = description1;
                 alarm.Description2 = Field(fields, 10);
+                alarm.SourceLabel = sourceLabel ?? "";
+                alarm.Line = lineNumber;
                 alarms.Add(alarm);
             }
 

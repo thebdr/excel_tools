@@ -14,6 +14,8 @@ namespace ExcelPowerTools.Commands
         private const string IndexDefinedName = "__PT_CSV_INDEX_SHEET";
         private const string IndexTitle = "Excel Power Tools CSV Workspace";
         private const int HeaderRow = 3;
+        internal const int IndexHeaderRow = HeaderRow;   // the Index table: sessions from the row below, in ForWorkbook order
+        internal const int IndexReloadColumn = 1;        // "Status" — the blue-bordered cell whose double-click reloads from disk
 
         private static readonly HashSet<string> RuntimeWorkspaceIds = new HashSet<string>(StringComparer.Ordinal);
         private static readonly IndexRefreshGate IndexOperations = new IndexRefreshGate();
@@ -834,6 +836,16 @@ namespace ExcelPowerTools.Commands
                 sheet.Columns(15).ColumnWidth = 45;
                 sheet.Range(sheet.Cells(HeaderRow + 1, 5), sheet.Cells(lastRow, 7)).NumberFormat = "yyyy-mm-dd hh:mm:ss";
                 sheet.Columns(4).NumberFormat = "@";
+                // The Status cells react to a double-click (reload from disk): the repo-wide blue
+                // border says so — the gesture is restricted to them (CsvCommands.OnSheetBeforeDoubleClick).
+                if (rows > 0)
+                {
+                    dynamic reloadCells = sheet.Range(
+                        sheet.Cells(HeaderRow + 1, IndexReloadColumn), sheet.Cells(HeaderRow + rows, IndexReloadColumn));
+                    reloadCells.Borders.LineStyle = 1;   // xlContinuous
+                    reloadCells.Borders.Weight = 2;      // xlThin
+                    reloadCells.Borders.Color = Rgb(0, 112, 192);
+                }
             }
             catch { }
 

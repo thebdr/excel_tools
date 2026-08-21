@@ -1249,15 +1249,11 @@ namespace ExcelPowerTools.UI
 
         private void ConfirmDiagnostic()
         {
-            DialogResult answer = MessageBox.Show(
-                this,
+            DialogResult answer = ExcelPowerTools.Interop.Dialogs.Message(
                 "Build a diagnostic Review.xlsx with the current findings?\r\n\r\n" +
                 "This is an explicit incomplete artifact. It preserves evidence and queued correction audit events, " +
                 "but it does not claim that logical history is complete.",
-                "Build diagnostic Review",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2);
+                MessageBoxButtons.YesNo, "Build diagnostic Review", this, defaultToNegative: true);
             if (answer == DialogResult.Yes) Finish(ComparisonAlignmentReviewAction.PublishDiagnostic);
         }
 
@@ -2236,19 +2232,11 @@ namespace ExcelPowerTools.UI
             return result.ToString();
         }
 
-        private void Inform(string message) => MessageBox.Show(
-            this,
-            message,
-            "Alignment review",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+        private void Inform(string message) =>
+            ExcelPowerTools.Interop.Dialogs.Info(message, "Alignment review", this);
 
-        private void Error(string heading, Exception exception) => MessageBox.Show(
-            this,
-            heading + "\r\n\r\n" + exception.Message,
-            "Alignment review",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Error);
+        private void Error(string heading, Exception exception) =>
+            ExcelPowerTools.Interop.Dialogs.Info(heading + "\r\n\r\n" + exception.Message, "Alignment review", this);
 
         private enum IssueEditorKind
         {

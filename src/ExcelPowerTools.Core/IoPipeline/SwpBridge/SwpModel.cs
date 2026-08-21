@@ -30,6 +30,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         FormulaI,        // bit-row Location formula repair (=I{blockHeader})
         HeaderLocationI, // block-header Location VALUE repair (the lost "+" prefix)
         HeaderFormulaI,  // strobe-sheet header Location formula (=MID(F15,4,12))
+        FUnitH,          // bit-row FUnit VALUE (brutal overwrite: the IO identity replaces the block formula)
+        LocationI,       // bit-row Location VALUE (brutal overwrite)
     }
 
     /// <summary>One spine row's overall state, ranked worst-first for display precedence.</summary>
@@ -110,6 +112,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public string MnemonicCell = "";  // may hold several mnemonics joined with "/"
         public string AddressCell = "";   // the "Bit" column: "I.80.3.0" ("Q." = output), "" on module rows
         public string IdCell = "";        // module rows carry the bus node here
+        public string SlotCell = "";      // AS-I slave rows: the gateway line ("1M" / "2M"); empty = line 1
+        public string ModuleNode = "";    // the bus module the row hangs under (a gateway's slaves follow its row)
         public string TypeCell = "";      // IO-list Type ("PA" on module rows)
         public string Desc1A = "";        // description language 1, permanent part
         public string Desc1B = "";        // description language 1, variable part
@@ -149,13 +153,23 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public string TsRef = "";
         public string ProfinetName = "";
         public string ProfinetIp = "";
+
+        /// <summary>AS-I slave identity "line.slave" ("1M.24A") — "" unless the ID is a slave address.</summary>
+        public string AsiNode = "";
+
+        /// <summary>The AS-I gateway's Profinet node the slave hangs off ("90"), taken from the
+        /// IO list's row order (a slave row sits under its gateway row); "" when unknown.</summary>
+        public string AsiMasterNode = "";
         public string GeneratedBy = "";
 
         /// <summary>
-        /// The I/O address as the SWP receives it (legacy List column C: no "I." prefix). A
-        /// generated row without a resolved address yields "" — never a fragment.
+        /// The I/O address as the SWP receives it (legacy List column C: no "I." prefix). An
+        /// AS-I slave is its composed identity ("1M.24A" — line.slave, no trailing ".0.0"); a
+        /// Profinet module keeps the legacy "236.0.0". A generated row without a resolved
+        /// address yields "" — never a fragment.
         /// </summary>
         public string SwpAddress() =>
+            AsiNode.Length > 0 ? AsiNode :
             IsBusModule ? Node + ".0.0" :
             Node.Length == 0 ? "" : Node + "." + Offset + "." + Bit;
     }

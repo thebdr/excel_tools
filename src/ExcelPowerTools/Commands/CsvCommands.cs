@@ -762,6 +762,28 @@ namespace ExcelPowerTools.Commands
 
         internal static void OnSheetActivate(object sh)
         {
+            QueueIndexRefresh(sh);
+        }
+
+        /// <summary>
+        /// The Index mirrors the files on disk, so it rescans whenever it comes into view — on a
+        /// sheet switch AND when its window regains focus (the user comes back from editing a file
+        /// elsewhere): the "edited externally" flag must show without switching sheets.
+        /// </summary>
+        internal static void OnWindowActivate(Excel.Workbook workbook, Excel.Window window)
+        {
+            try
+            {
+                if (workbook == null) return;
+                object active = null;
+                try { active = workbook.ActiveSheet; } catch { }
+                if (active != null) QueueIndexRefresh(active);
+            }
+            catch { }
+        }
+
+        private static void QueueIndexRefresh(object sh)
+        {
             try
             {
                 if (CsvWorkspace.SuppressIndexActivationRefresh || !CsvWorkspace.IsIndexSheet(sh)) return;
@@ -823,6 +845,9 @@ namespace ExcelPowerTools.Commands
                 }
                 if (edited.Count == 0)
                 {
+                    // The workbook is a view of the source FILES; they are all in sync, so Excel's own
+                    // "save changes?" prompt about the .xlsx is noise — mark it saved and let it go.
+                    try { workbook.Saved = true; } catch { }
                     QueueWorkspaceCleanup(closingWorkbookName, sessions);
                     return;
                 }
@@ -834,6 +859,7 @@ namespace ExcelPowerTools.Commands
                     "Cancel: keep the workspace open");
                 if (choice == DialogResult.No)
                 {
+                    try { workbook.Saved = true; } catch { }   // the decision was ours — no second prompt
                     QueueWorkspaceCleanup(closingWorkbookName, sessions);
                     return;
                 }
@@ -865,6 +891,87 @@ namespace ExcelPowerTools.Commands
                 }
                 catch { }
             }
+        }
+
+        /// <summary>
+        /// Double-clicking a row of the workspace Index reloads that source file from disk (the
+        /// "edited externally" path, on demand): the sheet is rebuilt from the current bytes — after
+        /// a confirmation when local edits or view-only content would be discarded.
+        /// </summary>
+        internal static void OnSheetBeforeDoubleClick(object sh, Excel.Range target, ref bool cancel)
+        {
+            try
+            {
+                if (target == null || !CsvWorkspace.IsIndexSheet(sh)) return;
+                dynamic sheet = sh;
+                int row = (int)target.Row;
+                if (row <= CsvWorkspace.IndexHeaderRow) return;
+                if ((int)target.Column != CsvWorkspace.IndexReloadColumn) return;   // the blue-bordered Status cell only
+
+                CsvSession session = null;
+                try
+                {
+                    // The "Full path" column names the file; the row position is the fallback.
+                    string path = sheet.Cells(row, 4).Value2 as string;
+                    if (!string.IsNullOrWhiteSpace(path))
+                        session = CsvSession.FindByPath(CsvWorkspaceLogic.CanonicalPath(path));
+                }
+                catch { }
+                if (session == null)
+                {
+                    IReadOnlyList<CsvSession> sessions = CsvSession.ForWorkbook(sheet.Parent);
+                    int i = row - CsvWorkspace.IndexHeaderRow - 1;
+                    if (i < 0 || i >= sessions.Count) return;
+                    session = sessions[i];
+                }
+
+                cancel = true;   // the double-click IS the gesture — no in-cell editing of the Index
+                ReloadFromDisk(session);
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Info("Reload failed:\n" + ex.Message);
+            }
+        }
+
+        private static void ReloadFromDisk(CsvSession session)
+        {
+            dynamic sheet = session.ResolveSheet();
+            if (sheet == null)
+            {
+                Dialogs.Info("The source sheet of\n" + session.SourcePath + "\nis gone — nothing to reload.");
+                return;
+            }
+
+            bool localChanges = session.HasLocalChanges(sheet, force: true);
+            bool hasViewOnlyContent = CsvSheet.HasViewOnlyContent(sheet);
+            string file = Path.GetFileName(session.SourcePath);
+            if (localChanges || hasViewOnlyContent)
+            {
+                string discarded = localChanges && hasViewOnlyContent
+                    ? "local source edits and view-only helper content"
+                    : localChanges ? "local source edits" : "view-only helper content";
+                if (!Dialogs.Confirm("Reload " + file + " from disk?\n\nThis rebuilds the sheet and discards " +
+                                     discarded + "."))
+                    return;
+            }
+
+            SourceReadState state = ReadSource(session.SourcePath, out byte[] diskBytes, out string readError);
+            if (state != SourceReadState.Present)
+            {
+                Dialogs.Info("Reload BLOCKED because the source is not readable:\n" + session.SourcePath +
+                             (string.IsNullOrEmpty(readError) ? "" : "\n\n" + readError));
+                return;
+            }
+
+            bool changedOnDisk = session.HasExternalChange();
+            ReloadSession(session, diskBytes, refreshIndex: true);
+            try
+            {
+                ExcelApp.App.StatusBar = "Reloaded from disk: " + file +
+                    (changedOnDisk ? "" : " (the file had not changed)");
+            }
+            catch { }
         }
 
         private static void QueueWorkspaceCleanup(

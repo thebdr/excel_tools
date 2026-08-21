@@ -313,10 +313,20 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
         }
 
         [Fact]
-        public void Overwrite_mode_still_warns_but_writes_the_io_values_plainly()
+        public void Overwrite_mode_puts_the_io_identity_in_the_rows_own_cells()
         {
+            // The FLD rule: brutal overwrite means the IO identity lands in H/I/J — the
+            // descriptions stay bare, the device is written, the differing cell gets the value.
             SwpRowSnapshot snapshot = CabinetSnapshot();
             snapshot.BlockFUnit = "=S9";
+            snapshot.HasCellH = true;
+            snapshot.CachedH = "=S9";
+            snapshot.FormulaH = "H181";       // the real rows: a plain per-cell formula, writable
+            snapshot.FormulaHShared = false;
+            snapshot.HasCellI = true;
+            snapshot.CachedI = "+MC1.CC1";
+            snapshot.FormulaI = "I181";
+            snapshot.FormulaIShared = false;
             var log = new List<SwpLogEntry>();
 
             SwpWorkspaceModel model = Build(CabinetEntry(), Index(("CABINET", snapshot)),
@@ -330,8 +340,10 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             Assert.Equal(SwpRowVerdict.LabelMismatch, row.Verdict);   // the warning always stands
             Assert.Contains(log, l => l.Severity == SwpLogSeverity.Warning &&
                 l.Message.Contains("functional unit") && l.Message.Contains("[Mismatch OK]"));
+            Assert.Equal("=S1", EditFor(row, SwpField.FUnitH).Proposed);      // the FU lands in H
+            Assert.Null(EditFor(row, SwpField.LocationI));                   // the location agreed
             Assert.Equal("CIRCUIT BREAKER TRIPPED", EditFor(row, SwpField.Desc1T).Proposed);
-            Assert.Equal("-F22001", EditFor(row, SwpField.DeviceJ).Proposed);
+            Assert.Equal("-F22001", EditFor(row, SwpField.DeviceJ).Proposed); // …and the device in J
             Assert.Null(EditFor(row, SwpField.FormulaQ));
         }
 

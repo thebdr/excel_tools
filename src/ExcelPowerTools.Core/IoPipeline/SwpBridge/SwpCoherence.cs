@@ -6,6 +6,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     public enum SwpCsvVerdict { NotChecked, Ok, NameMissing, AddressMismatch }
     public enum SwpBusfieldVerdict { NotChecked, Ok, NodeMissing, DataMismatch }
     public enum SwpAlarmVerdict { NotChecked, Ok, NotFound, DescriptionMismatch }
+    public enum SwpBusExtVerdict { NotChecked, Ok, NotFound, NodeMismatch, SubDeviceMismatch }
 
     /// <summary>
     /// The legacy DiagCheck coherence, as spine verdict columns: signal rows are looked up in
@@ -24,19 +25,30 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             public string WarnRaw = "";       // the raw warning-on-fault flag (bit 1 = ignore error)
             public string LinkedAddress = ""; // AS-I slaves name their master node here
             public int ReferenceIndex, Element, DiagBit;
+            public int Line;                  // 1-based line in the busfield file
+        }
+
+        /// <summary>An active CSV record with its 1-based line — the spine keeps the line so a
+        /// double-click can open the document there.</summary>
+        private sealed class LineRecord
+        {
+            public CsvRecord Record;
+            public int Line;
         }
 
         public static void Annotate(SwpWorkspaceModel model, CsvDocument plantInputs,
             CsvDocument busfield, SwpPlantType plantType, List<SwpLogEntry> log,
             IReadOnlyList<SwpAlarmString> alarmStrings = null,
-            int firstLineId = 1, int groupIndex = 1, SwpIndexRules rules = null)
+            int firstLineId = 1, int groupIndex = 1, SwpIndexRules rules = null,
+            CsvDocument busExtended = null)
         {
             if (model == null) return;
             rules = rules ?? SwpIndexRules.Official();
 
-            List<CsvRecord> inputRecords = ActiveRecords(plantInputs);
+            List<LineRecord> inputRecords = ActiveRecords(plantInputs);
             List<BusfieldRow> busfieldRows = busfield == null ? null : ParseBusfield(busfield, log);
             if (busfieldRows != null) CheckBusfieldGlobals(busfieldRows, log);
+            List<LineRecord> extendedRecords = ActiveRecords(busExtended);
 
             var cardBySheet = new Dictionary<string, string>();
 
@@ -48,6 +60,13 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 if (!entry.IsBusModule)
                 {
                     if (inputRecords != null) CheckPlantInputs(row, entry, inputRecords, log);
+                }
+                else if (entry.AsiNode.Length > 0)
+                {
+                    // AS-I slaves are not Profinet nodes — the busfield never lists them; their
+                    // binding lives in BUS_ExtendedDiagnostic.
+                    if (extendedRecords != null)
+                        CheckBusExtended(row, entry, extendedRecords, CardOf(entry, cardBySheet), log);
                 }
                 else if (busfieldRows != null && row.Mapped != null && row.Mapped.Ok)
                 {
@@ -112,6 +131,9 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 return;
             }
 
+            row.AlarmLine = alarm.Line;
+            row.AlarmSource = alarm.SourceLabel;
+
             bool mismatch = false;
             void Contains(string what, string value, string description, string which)
             {
@@ -134,15 +156,87 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             row.AlarmVerdict = mismatch ? SwpAlarmVerdict.DescriptionMismatch : SwpAlarmVerdict.Ok;
         }
 
-        private static void CheckPlantInputs(SwpSpineRow row, DiagnosticEntry entry,
-            List<CsvRecord> records, List<SwpLogEntry> log)
+        /// <summary>
+        /// BUS_ExtendedDiagnostic.csv binds sub-module states to mnemonics — on the sorter, the
+        /// AS-I slaves' CLASSDIAG alarms: "@;mnemonic;card;gateway node;sub-device;type;mask;#
+        /// comment". The slave's mnemonic must be bound, to the gateway it hangs off (when the IO
+        /// list's row order tells) and to the sub-device its line + address fix
+        /// (<see cref="SwpAsiAddressing"/>).
+        /// </summary>
+        private static void CheckBusExtended(SwpSpineRow row, DiagnosticEntry entry,
+            List<LineRecord> records, string card, List<SwpLogEntry> log)
         {
-            foreach (CsvRecord record in records)
+            int expectedSub = SwpAsiAddressing.SubDevice(entry.AsiNode);
+            LineRecord found = null;
+            foreach (LineRecord item in records)
+            {
+                if (!string.Equals(Field(item.Record, 1), entry.Mnemonic, System.StringComparison.OrdinalIgnoreCase)) continue;
+                found = item;
+                break;
+            }
+
+            if (found == null)
+            {
+                row.BusExtVerdict = SwpBusExtVerdict.NotFound;
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Error,
+                    "AS-I slave " + entry.AsiNode + " (sub-device " + expectedSub +
+                    "): mnemonic not bound in BUS_ExtendedDiagnostic",
+                    entry.CardSheet, entry.SourceRow, entry.Mnemonic));
+                return;
+            }
+
+            row.BusExtLine = found.Line;
+            string boundCard = IoListLogic.Norm(Field(found.Record, 2));
+            string boundNode = IoListLogic.Norm(Field(found.Record, 3));
+            string boundSub = IoListLogic.Norm(Field(found.Record, 4));
+
+            if (entry.AsiMasterNode.Length > 0 && boundNode != IoListLogic.Norm(entry.AsiMasterNode))
+            {
+                row.BusExtVerdict = SwpBusExtVerdict.NodeMismatch;
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Error,
+                    "BUS_ExtendedDiagnostic binds it to gateway node " + boundNode +
+                    "; the IO list hangs slave " + entry.AsiNode + " off node " + entry.AsiMasterNode,
+                    entry.CardSheet, entry.SourceRow, entry.Mnemonic));
+                return;
+            }
+            if (card.Length > 0 && boundCard.Length > 0 && boundCard != card)
+            {
+                row.BusExtVerdict = SwpBusExtVerdict.NodeMismatch;
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Error,
+                    "BUS_ExtendedDiagnostic binds it to card " + boundCard + "; the IO list has slave " +
+                    entry.AsiNode + " on card " + card,
+                    entry.CardSheet, entry.SourceRow, entry.Mnemonic));
+                return;
+            }
+            if (boundSub != expectedSub.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            {
+                row.BusExtVerdict = SwpBusExtVerdict.SubDeviceMismatch;
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Error,
+                    "BUS_ExtendedDiagnostic sub-device " + boundSub + " vs " + expectedSub +
+                    " for AS-I slave " + entry.AsiNode + " (line 1: A 1-31, B 33-63; line 2: A 65-95, B 97-127)",
+                    entry.CardSheet, entry.SourceRow, entry.Mnemonic));
+                return;
+            }
+
+            if (entry.AsiMasterNode.Length == 0)
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Info,
+                    "AS-I slave " + entry.AsiNode + " has no gateway row above it in the IO list — " +
+                    "the bound gateway node " + boundNode + " was not verified",
+                    entry.CardSheet, entry.SourceRow, entry.Mnemonic));
+            row.BusExtVerdict = SwpBusExtVerdict.Ok;
+        }
+
+        private static void CheckPlantInputs(SwpSpineRow row, DiagnosticEntry entry,
+            List<LineRecord> records, List<SwpLogEntry> log)
+        {
+            foreach (LineRecord item in records)
             {
                 // Legacy: a containment match — the CSV signal id carries the mnemonic.
+                CsvRecord record = item.Record;
                 string name = Field(record, 1);
                 if (name.Length == 0 || !name.Contains(entry.Mnemonic)) continue;
 
+                row.CsvLine = item.Line;
                 bool addressMatches =
                     IoListLogic.Norm(Field(record, 11)) == entry.Node &&
                     IoListLogic.Norm(Field(record, 12)) == entry.Offset &&
@@ -203,6 +297,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     entry.CardSheet, entry.SourceRow, entry.Mnemonic));
                 return;
             }
+            row.BusfieldLine = found.Line;
 
             // Two valid configurations exist. Modern (rules §3.7): the diagnostic linkage lives
             // in a type-11 BUS input, and DB class ID / Element / Bit in the busfield stay 0.
@@ -232,8 +327,10 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         private static List<BusfieldRow> ParseBusfield(CsvDocument document, List<SwpLogEntry> log)
         {
             var rows = new List<BusfieldRow>();
+            int line = 0;
             foreach (CsvRecord record in document.Records)
             {
+                line++;
                 if (!Field(record, 0).Contains("@")) continue;
                 string node = Field(record, 2);
                 if (node.Length == 0 || !AllDigits(node)) continue;
@@ -253,17 +350,22 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     ReferenceIndex = IntOf(Field(record, 8)),
                     Element = IntOf(Field(record, 10)),
                     DiagBit = IntOf(Field(record, 11)),
+                    Line = line,
                 });
             }
             return rows;
         }
 
-        private static List<CsvRecord> ActiveRecords(CsvDocument document)
+        private static List<LineRecord> ActiveRecords(CsvDocument document)
         {
             if (document == null) return null;
-            var records = new List<CsvRecord>();
+            var records = new List<LineRecord>();
+            int line = 0;
             foreach (CsvRecord record in document.Records)
-                if (Field(record, 0).Contains("@")) records.Add(record);
+            {
+                line++;
+                if (Field(record, 0).Contains("@")) records.Add(new LineRecord { Record = record, Line = line });
+            }
             return records;
         }
 

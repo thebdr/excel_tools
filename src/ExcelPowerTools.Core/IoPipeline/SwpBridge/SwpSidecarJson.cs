@@ -19,11 +19,22 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public string ConfigFileName = "";
         public string IoListPath = "";
         public List<string> CardSheets = new List<string>();
+
+        /// <summary>Card sheets deliberately unticked in setup. Every card sheet starts ticked;
+        /// only these stay off when the system is reopened (a card added to the IO list since
+        /// is therefore ticked by default).</summary>
+        public List<string> ExcludedCardSheets = new List<string>();
         public string PlantInputsCsvPath = "";
         public string BusfieldCsvPath = "";
         public string DestinationParamsCsvPath = "";
         public string SensorCsvPath = "";
         public string StrobeDeviceCsvPath = "";
+        public string BusExtendedDiagnosticCsvPath = "";   // sorter: AS-I slave bindings (MSC\DB_Csv)
+
+        /// <summary>One PRODUCTION root resolving every plant input by the realtime tree layout
+        /// ("" = the per-file paths above are used as stored). Resolution runs at build time and
+        /// fills the per-file paths, so the sidecar shows what was actually found.</summary>
+        public string ProductionRoot = "";
         public int FirstLineId = 1;
         public int GroupIndex = 1;
         public string IncludeRegex = "";
@@ -104,11 +115,14 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             MiniJsonWriter.Property(json, "configFileName", s.ConfigFileName, first: false);
             MiniJsonWriter.Property(json, "ioListPath", s.IoListPath, first: false);
             AppendStringArray(json, "cardSheets", s.CardSheets);
+            AppendStringArray(json, "excludedCardSheets", s.ExcludedCardSheets);
             MiniJsonWriter.Property(json, "plantInputsCsvPath", s.PlantInputsCsvPath, first: false);
             MiniJsonWriter.Property(json, "busfieldCsvPath", s.BusfieldCsvPath, first: false);
             MiniJsonWriter.Property(json, "destinationParamsCsvPath", s.DestinationParamsCsvPath, first: false);
             MiniJsonWriter.Property(json, "sensorCsvPath", s.SensorCsvPath, first: false);
             MiniJsonWriter.Property(json, "strobeDeviceCsvPath", s.StrobeDeviceCsvPath, first: false);
+            MiniJsonWriter.Property(json, "busExtendedDiagnosticCsvPath", s.BusExtendedDiagnosticCsvPath, first: false);
+            MiniJsonWriter.Property(json, "productionRoot", s.ProductionRoot, first: false);
             MiniJsonWriter.NumberProperty(json, "firstLineId", s.FirstLineId, first: false);
             MiniJsonWriter.NumberProperty(json, "groupIndex", s.GroupIndex, first: false);
             MiniJsonWriter.Property(json, "includeRegex", s.IncludeRegex, first: false);
@@ -138,6 +152,11 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 if (o.SwpDbIndex.HasValue)
                     MiniJsonWriter.NumberProperty(json, "swpDbIndex", o.SwpDbIndex.Value, first: false);
                 MiniJsonWriter.BoolProperty(json, "forceElectricalIds", o.ForceElectricalIds, first: false);
+                if (o.FldMode.HasValue)
+                    MiniJsonWriter.Property(json, "fldMode", o.FldMode.Value.ToString(), first: false);
+                if (o.TrustConfigDescriptions.HasValue)
+                    MiniJsonWriter.BoolProperty(json, "trustConfigDescriptions",
+                        o.TrustConfigDescriptions.Value, first: false);
                 MiniJsonWriter.Property(json, "desc1", o.Desc1Override, first: false);
                 MiniJsonWriter.Property(json, "desc2", o.Desc2Override, first: false);
                 json.Append('}');
@@ -241,11 +260,15 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 s.IoListPath = settings.Str("ioListPath");
                 foreach (JsonValue sheet in settings.Arr("cardSheets"))
                     if (sheet.Kind == JsonKind.String) s.CardSheets.Add(sheet.Text);
+                foreach (JsonValue sheet in settings.Arr("excludedCardSheets"))
+                    if (sheet.Kind == JsonKind.String) s.ExcludedCardSheets.Add(sheet.Text);
                 s.PlantInputsCsvPath = settings.Str("plantInputsCsvPath");
                 s.BusfieldCsvPath = settings.Str("busfieldCsvPath");
                 s.DestinationParamsCsvPath = settings.Str("destinationParamsCsvPath");
                 s.SensorCsvPath = settings.Str("sensorCsvPath");
                 s.StrobeDeviceCsvPath = settings.Str("strobeDeviceCsvPath");
+                s.BusExtendedDiagnosticCsvPath = settings.Str("busExtendedDiagnosticCsvPath");
+                s.ProductionRoot = settings.Str("productionRoot");
                 s.FirstLineId = IntOf(settings, "firstLineId", 1);
                 s.GroupIndex = IntOf(settings, "groupIndex", 1);
                 s.IncludeRegex = settings.Str("includeRegex");
@@ -285,6 +308,12 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 if (dbIndex != null && dbIndex.Kind == JsonKind.Number &&
                     int.TryParse(dbIndex.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
                     o.SwpDbIndex = index;
+                // Absent (or unknown) = follow the workspace default; never a silent wrong mode.
+                if (TryParseEnum(entry.Str("fldMode"), out SwpMismatchMode fldMode))
+                    o.FldMode = fldMode;
+                JsonValue trust = entry.Get("trustConfigDescriptions");
+                if (trust != null && trust.Kind == JsonKind.Bool)
+                    o.TrustConfigDescriptions = trust.Flag;
                 if (o.Mnemonic.Length > 0) result.Overrides.Add(o);
             }
 

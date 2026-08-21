@@ -21,11 +21,26 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public bool SkipLabelCheck;
         public int? SwpDbIndex;
         public bool ForceElectricalIds;
+
+        /// <summary>Per-row FLD treatment: this row writes the IO identity into its own H/I cells
+        /// (Overwrite) or appends it to the descriptions (AppendToDescription), whatever the
+        /// workspace default says. null = follow the default. Either way the FLD rule holds —
+        /// the identity is never lost, only the place it lands changes.</summary>
+        public SwpMismatchMode? FldMode;
+
+        /// <summary>Per-row answer to "never overwrite CONFIG_PLANT descriptions": true = this row
+        /// keeps the CONFIG template text (the bridge contributes only the FLD label), false = the
+        /// bridge writes its composed IO text. null = follow the workspace default, which also
+        /// applies its automatic scope (generated + "P*"-typed rows). An explicit tick wins over
+        /// that scope — a gesture that does nothing would be a bug.</summary>
+        public bool? TrustConfigDescriptions;
+
         public string Desc1Override = "";
         public string Desc2Override = "";
 
         public bool IsEmpty =>
-            !SkipLabelCheck && !SwpDbIndex.HasValue && !ForceElectricalIds &&
+            !SkipLabelCheck && !SwpDbIndex.HasValue && !ForceElectricalIds && !FldMode.HasValue &&
+            !TrustConfigDescriptions.HasValue &&
             Desc1Override.Length == 0 && Desc2Override.Length == 0;
     }
 

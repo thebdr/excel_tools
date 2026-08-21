@@ -88,14 +88,115 @@ namespace ExcelPowerTools.Interop
             }
         }
 
+        // The three message boxes are the add-in's OWN modal form, not Win32 MessageBox: MessageBox
+        // always plays a system sound (the icon's, or the default beep without one) and nothing in
+        // its API silences it. Same ownership (the invoking Excel window), same keys (Enter = the
+        // affirmative button, Esc = the negative one), no sound, no icon.
+
         public static void Info(string message) =>
-            MessageBox.Show(ExcelWindow.Current, message, Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Message(message, MessageBoxButtons.OK);
+
+        public static void Info(string message, string caption, IWin32Window owner = null) =>
+            Message(message, MessageBoxButtons.OK, caption, owner);
 
         public static bool Confirm(string message) =>
-            MessageBox.Show(ExcelWindow.Current, message, Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+            Message(message, MessageBoxButtons.YesNo) == DialogResult.Yes;
 
         public static DialogResult YesNoCancel(string message) =>
-            MessageBox.Show(ExcelWindow.Current, message, Title, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            Message(message, MessageBoxButtons.YesNoCancel);
+
+        public static bool OkCancel(string message, string caption, IWin32Window owner = null) =>
+            Message(message, MessageBoxButtons.OKCancel, caption, owner) == DialogResult.OK;
+
+        public static bool RetryCancel(string message, string caption, IWin32Window owner = null) =>
+            Message(message, MessageBoxButtons.RetryCancel, caption, owner) == DialogResult.Retry;
+
+        /// <summary>The silent modal box behind every variant; owner defaults to the Excel window.</summary>
+        public static DialogResult Message(string message, MessageBoxButtons buttons, string caption = null,
+            IWin32Window owner = null, bool defaultToNegative = false)
+        {
+            Font font = SystemFonts.MessageBoxFont;
+            const int maxTextWidth = 640;
+            Size text = TextRenderer.MeasureText(message ?? "", font, new Size(maxTextWidth, 0),
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+            int width = Math.Max(360, Math.Min(text.Width, maxTextWidth) + 48);
+            int textHeight = Math.Max(text.Height, font.Height) + 8;
+
+            using (var form = new Form
+            {
+                Text = caption ?? Title,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                Font = font,
+                ClientSize = new Size(width, textHeight + 24 + 52),
+            })
+            using (var label = new Label
+            {
+                Text = message ?? "",
+                AutoSize = false,
+                UseMnemonic = false,
+                Location = new Point(16, 14),
+                Size = new Size(width - 32, textHeight),
+                TextAlign = ContentAlignment.TopLeft,
+            })
+            using (var panel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                FlowDirection = FlowDirection.RightToLeft,
+                Height = 52,
+                Padding = new Padding(10, 10, 10, 10),
+            })
+            {
+                Button affirmative = null, negative = null;
+                void Add(string caption2, DialogResult result, bool isAffirmative, bool isNegative)
+                {
+                    var button = new Button { Text = caption2, DialogResult = result, Width = 88, Height = 28 };
+                    panel.Controls.Add(button);   // right-to-left flow: the first added sits rightmost
+                    if (isAffirmative) affirmative = button;
+                    if (isNegative) negative = button;
+                }
+
+                switch (buttons)
+                {
+                    case MessageBoxButtons.YesNo:
+                        Add("No", DialogResult.No, false, true);
+                        Add("Yes", DialogResult.Yes, true, false);
+                        break;
+                    case MessageBoxButtons.YesNoCancel:
+                        Add("Cancel", DialogResult.Cancel, false, true);
+                        Add("No", DialogResult.No, false, false);
+                        Add("Yes", DialogResult.Yes, true, false);
+                        break;
+                    case MessageBoxButtons.OKCancel:
+                        Add("Cancel", DialogResult.Cancel, false, true);
+                        Add("OK", DialogResult.OK, true, false);
+                        break;
+                    case MessageBoxButtons.RetryCancel:
+                        Add("Cancel", DialogResult.Cancel, false, true);
+                        Add("Retry", DialogResult.Retry, true, false);
+                        break;
+                    default:
+                        Add("OK", DialogResult.OK, true, true);
+                        break;
+                }
+
+                form.Controls.Add(label);
+                form.Controls.Add(panel);
+                form.AcceptButton = affirmative;
+                form.CancelButton = negative;
+                UI.GdiText.Apply(form);
+                form.Shown += (s, e) => (defaultToNegative ? negative : affirmative)?.Focus();
+
+                DialogResult result = form.ShowDialog(owner ?? ExcelWindow.Current);
+                // Closing with the title-bar X yields Cancel; a Yes/No box has no Cancel — read it as No.
+                if (buttons == MessageBoxButtons.YesNo && result == DialogResult.Cancel) return DialogResult.No;
+                if (buttons == MessageBoxButtons.OK) return DialogResult.OK;
+                return result;
+            }
+        }
 
         public static string OpenFile(string filter)
         {

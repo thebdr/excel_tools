@@ -163,7 +163,13 @@ repeats these limits before it runs.
   two columns are reserved internally. If Reload would rebuild a sheet containing view-only helper values or
   formulas, the add-in identifies that content and asks before discarding it.
 - Source associations live for the current Excel process; reopening the original files rebuilds them.
-  Closing a workspace with unsaved source-sheet values offers Save All before closing.
+  The workspace workbook is a view of the files, so closing it never triggers Excel's own "save
+  changes?" prompt; unsaved source-sheet values get the add-in's prompt instead, with Save All.
+- **Reload from disk** on demand: double-click a file's blue-bordered **Status** cell on the Index and
+  its sheet is rebuilt from the current bytes (the same path the external-edit conflict offers),
+  asking first when local edits or view-only helper content would be discarded. The Index rescans
+  the files whenever it comes into view — on a sheet switch and when its window regains focus — so
+  an "edited externally" flag shows without switching sheets.
 
 ## IO Pipeline
 
@@ -277,9 +283,29 @@ in the Tools Hub, and (while a session is live) on the cell right-click menu.
 Inputs + one Outputs CSV, plus per-session tuning: an **IO column limit** (first N source columns per
 sheet, 0 = all), a **compare-virtuals regex** (virtual CSV rows — types 5/6/9/10 — whose mnemonic
 matches join the comparison BY NAME, for the CLASSDIAGAL-style virtuals that mirror IO-list entries)
-and an **exclude regex** (IO-list rows whose mnemonic matches are shown but ignored: no claim, no
-verdict, faded). All remembered in the registry. Builds and refreshes run behind an opaque
+and an **exclude regex** over IO-list MNEMONICS: a matching mnemonic drops out of the comparison
+while the rest of its cell still joins — the case is a generator key riding along a real mnemonic
+in plain mnemonic syntax (`BUS_CABINETAL00159/SAFETY_NUMDOORS_16`: the key tells another tool to
+generate sixteen door blocks at that node), which would otherwise count as a missing name. Such a
+row reads `· filtered`; its IO-side mnemonic update re-attaches the filtered keys (and a module
+row's `BUS_` prefix), so the list's own conventions are never overwritten. A cell whose every
+mnemonic matches is excluded whole: shown, no claim, no verdict, faded. All remembered in the
+registry. Builds and refreshes run behind an opaque
 "working…" curtain — Excel's SDI window churn is covered, not fought.
+
+**Virtual twins** — a virtual CSV record (type 5/6/9/10) that carries an IO point's mnemonic
+LOOKS like the signal but acquires nothing from the field. Such a record is the point's *twin*:
+the join binds it to the IO row flagged — row label `Signal · virtual twin`, verdict `virtual`
+(never the clean green), a **red outline** around its CSV block — instead of leaving the row
+"missing" (which would offer an integrate the apply then reports as "applied externally", the
+record being already there). The row action **T — Change the CSV type** gives the twin a real
+type through the same picker Integrate uses (queued as a Type field update, resolved by mnemonic
+at apply); the address update then follows as for any row. A real record at the address always
+wins over a twin; virtuals the compare-virtuals regex opted in are *expected* and keep joining as
+clean matches; a virtual with no IO twin stays `CSV-only · virtual`. Two cells per row carry a
+**blue outline** and open the sources on double-click: the IO list at the row (the *Functional
+unit* column, or Mnemonic when a list lacks it) and the row's CSV in the PT_CSV workspace at the
+record (the *CSV Card* column).
 
 **The view** — one sheet per card, IO-list rows in their own order and **columns in their source
 positions** (the workspace reads side by side with the original; source column widths and the
@@ -317,6 +343,9 @@ create across the row's CSV block.
 sheet's CSV names into the IO-list mnemonic cell, **U** make the CSV match the sheet (delete vanished
 records, append new ones cloned from a sibling), **A** update the IO address from the CSV side.
 
+**Closing** — the workspace workbook is a view; closing it never triggers Excel's save prompt
+(every decision lives in the sidecar).
+
 **The queue** — `_Queue` lists actions in order, Include first (double-click ☑/☐, typed x/1 count
 too; unchecked = skipped but kept). Repeated edits supersede but keep the **first** old value — the
 three-way base. Everything persists in `<io-list>.iobridge.json` (atomic, `.bak`), written on every
@@ -353,9 +382,26 @@ Then: plant type (**MSC** sorter / **ISPC** induction / **UPS** upstream / **SAF
 direct-to-SCADA safety PLC — MSC-shaped mnemonics on a cabinet-only SWP) with the first-line and
 group parameters, the workspace's **second-language code** (a free 2-letter glossary code —
 PT, FR, IT, …), the IO-list workbook + its `R.S.C` card
-sheets, and OPTIONAL plant CSVs (Plant_Inputs and Busfield for coherence checks,
-Destination_Parameters for the sorter chute remap, Sensor and StrobeDevice for the upstream
-generators) plus the exported **Alarms_*.txt files** (multi-select) for the third coherence leg:
+sheets, and ONE optional **Production root** — the realtime `PRODUCTION` folder (or the backup
+folder that contains it), resolved live by the real tree layout: `IODriver\BusField.csv` for every
+plant; `MSC\DB_Csv\` (Plant_Inputs, Destination_Parameters for the chute remap,
+BUS_ExtendedDiagnostic for the AS-I slave bindings) and
+`DataDrawSupervisor\DataDraw_PlantData\AlarmLists\` for the sorter; `ISPC\db_csv\Plant_Inputs.csv`
+and `ISPC\AlarmLists\` for induction; `ConveyorSys\SysGroupNN\Database\DB_Params\` (Sensor,
+StrobeDevice for the generators) and `…\DB_Diag\` for upstream (the configured group, else the only
+one); flat copies directly under the root work too, and SAFETY looks up flat copies only. The
+dialog lists what resolved (✓ green) and what stays off (✗ red) — only the inputs the plant type
+consumes are listed at all; the resolution re-runs at every build and
+the resolved paths land in the sidecar (a sidecar from before the root keeps its per-file paths
+until a root replaces them). The five write rules carry tooltips saying what each one puts in the file. One deserves spelling
+out here: **Never overwrite CONFIG_PLANT descriptions**. The text SCADA shows is CONFIG_PLANT's
+template *concatenated with* the SWP's description cell (`SUBSTITUTE(CONFIG!template & T{row}, …)`),
+so writing the composed IO description into T stacks a second sentence onto a template that often
+already says the same thing. Ticked, the rows this bridge generates (photocells, strobes) and the
+`P*`-typed module rows keep CONFIG's wording — the bridge contributes only the FLD label, and
+proposes no description edit at all when there is no mismatch, so an existing template-fed cell is
+never blanked. The exported **Alarms_*.txt
+files** feed the third coherence leg:
 every checked mnemonic must appear among the exported alarms and the exported texts must carry
 the row's Location and Device (description 2 checked only when exported). WHICH objects are
 checked and with WHAT index shift comes from the **`_Offsets` table** (below) — the official
@@ -363,7 +409,16 @@ values reproduce the v49 "ddsng 9.4.2" semantics (MSC cabinets export +1, ISPC l
 1:1 with groups −1, UPS cabinets −1 with belts/zones 1:1, SAFETY 1:1 zero-based). The Workspace
 sheet's **Alarm strings** verdict column reads ok / not exported / text differs, with the details in
 `_Log`; a file whose tags repeat warns that the export was appended-to (ExcelLoader never
-overwrites — delete the old `Alarms_*.txt` and regenerate). An include/exclude **regex pair**
+overwrites — delete the old `Alarms_*.txt` and regenerate). The sorter's fourth leg is
+**BUS_ExtendedDiagnostic.csv**, which binds AS-I slave states to their CLASSDIAG mnemonics: a
+slave row's Slot (`1M`/`2M`, empty = line 1) + ID (`24A`) compose its identity `1M.24A`, the
+gateway it hangs off is the `PA` row above it in the card sheet, and the sub-device number follows
+the gateway image layout (line 1 A 1..31 / B 33..63, line 2 A 65..95 / B 97..127 — the IO list's
+*ASI Addressing* sheet, kept in code); the **BUS ext. diag** column reads ok / not bound / node
+differs / sub-device differs, and such slaves are no longer looked up in the busfield (they are
+not Profinet nodes). Double-clicking any of the four verdict cells opens its document at the
+matched line — the CSVs in Excel, the `Alarms_*.txt` in Notepad++ (Notepad when it is not
+installed). An include/exclude **regex pair**
 extends the built-in diagnostic-mnemonic patterns — an include match is an explicit override and
 bypasses the length rules too. `.xls` is refused — save as `.xlsx` first. Identity fields
 (FUnit, Location, Device, Profinet name/IP, address, ID) are cleaned of known **stray
@@ -371,7 +426,16 @@ characters** on read — the leaked Excel apostrophe, typographic quotes, backti
 characters, NBSP/tab — a deliberate DENYLIST (unknown characters pass through untouched
 rather than being silently deleted), with one `_Log` line per distinct cleaned value.
 
-A **Home** sheet opens the workspace: the guide, the color legend, and buttons for every command.
+Running *open workspace* again while one is open **reconfigures in place**: after a confirm, the
+new settings rebuild INTO the same workbook — the window, its position and the workbook itself
+survive, so flipping a write rule (overwrite ↔ append) no longer closes anything. Decisions live
+in the sidecar and are untouched either way.
+
+A **Home** sheet opens the workspace: the six command buttons, the four-step loop (Review ·
+Inspect · Steer · Apply) as a strip, a legend painted with the real swatches, a sheet map whose
+names are jump links, the double-click gestures as a Where · Cell · What table, and the list of
+the edits that stick. Closing the workspace workbook never triggers Excel's save prompt — the
+sidecar is the state.
 
 **The Workspace sheet** (the spine) — one flat sheet, one row per diagnostic mnemonic in
 IO-list order: the IO side, the
@@ -382,20 +446,40 @@ IL/ILGRP sheets for ISPC, ALLQ/ALLB/ALLZ quads → UP sheets for UPS, EMERGENCY�
 EMERI_→ALLQ_ rewrites included — anchored at the START of the mnemonic, so command signals
 like `A_RESET_EMERGENCY` are neither rewritten nor treated as diagnostics),
 the row's CURRENT SWP values, the proposed values (blank when nothing changes) and the verdicts.
+Headers are colored by SOURCE — blue for the IO list, lavender for the checked production files,
+orange for the SWP, olive for the override columns — and every column autofits to its largest
+cell. The block identity is one column per field, **FU (IOL / SWP)** and **Loc (IOL / SWP)**
+right before Device: the value alone when both sides agree, `io / swp` (tinted) when they differ.
+The **Formulas** column is the row's formula status: `append` / `rewrite` for a queued Q/R
+description-formula change, `repair H` / `repair I` / `repair H+I` when the cleaner queued a
+restoration of that SWP row's FUnit/Location formulas — painted with the action's queue status.
 The SWP-related headers wear **light orange** (the IO side stays blue) for a quick spot. Row
 states are font colors — green up-to-date, red missing/invalid/duplicate, orange label mismatch;
 pending "▸" cells carry the queue highlight (yellow pending, red conflict, blue applied
 externally). Two mnemonics resolving to the same SWP row are surfaced as **duplicates and queue
 nothing** (the legacy silently let the last one win). Rows without a bit address take their node
 from the ID column — numeric Profinet nodes and **AS-I `nA`/`nB` addresses** both count (the SWP
-receives `236.0.0` / `1A.0.0`); any other ID leaves the row addressless, its G untouched — this is
+receives `236.0.0` for a Profinet module and the composed `1M.24A` — line.slave, no `.0.0` — for
+an AS-I slave); any other ID leaves the row addressless, its G untouched — this is
 how the sorter's virtual CLASSDIAG rows come through.
 
 **Overrides** — the `[bracketed]` columns are the editable exceptions and persist per mnemonic in
 the sidecar: *Mismatch OK* (the FU/Location mismatch is deliberate — silences its warning and
 verdict; the configured treatment still applies), *DB index* (reroute the device index,
-empty = AUTO), *Force IDs* (write the device even on belt alarms), and the two description
-overrides. Editing one recomputes the diff **in memory** — no file is re-read. `_Dictionary`
+empty = AUTO), *Force IDs* (on a `*BELT` sheet the device cell J is normally left alone — a belt is
+a run of conveyor, not one labeled part; ticked, the row writes J like any other: the IO device in
+overwrite mode, **blank** in append mode, where the device rides inside the appended label instead),
+and the two description overrides.
+
+Two override columns **name the opposite of the workspace default**, because that is what ticking
+them does — `[Overwrite FLD]` / `[Append FLD]` flips where one row's identity lands, and
+`[Keep CONFIG text]` / `[Write IO text]` flips whether the bridge's composed text is added on top of
+CONFIG_PLANT's. Cleared, the row follows the default again. Each tick is stored as the answer it
+chose, never as "flip", so changing the workspace default later cannot silently reverse a row's
+decision; a row whose stored answer has become the default simply shows unticked. The FLD rule
+holds under either FLD choice — the identity always lands somewhere, only *where* changes. Unlike
+the workspace setting, an explicit `[Keep CONFIG text]` tick also bypasses that setting's automatic
+scope, so it works on any row. Editing one recomputes the diff **in memory** — no file is re-read. `_Dictionary`
 (the description find→replace pairs, per language) and `_StrobeTemplates` (the strobe alarm
 blocks) are free-edit sheets saved on every change and applied on the next refresh.
 
@@ -413,12 +497,20 @@ row with the persistent **[Mismatch OK]** override (generated rows are auto-sile
 also clears the orange verdict; the warning's wording follows the row's FU/Location formula
 HEALTH: intact formulas mean a real configuration difference, broken ones note that the
 restoration is already queued (the formula cleaner) and that the comparison stands on the
-restored block values. What the mismatch does to the WRITES is one exclusive setup choice:
+restored block values. **The FLD rule** governs what the mismatch does to the writes: the IO
+list's Functional unit / Location / Device are the most important information the SWP carries
+(the maintainer has SCADA and the T.S. manual, nothing else — a location that only says
+`+SAFETYDOORS` for sixteen doors means a service call instead of a repair), so they must ALWAYS
+be visible, either in the row's own cells or in its descriptions. One exclusive setup choice:
 **append identity to descriptions** (the compacted label lands in T/U, the device blanks, and
 template-only Q/R formulas — ones not referencing `T{row}`/`U{row}` — get the `&" "&T` extension
 automatically, since that is the only way the appended identity reaches the displayed text) or
-**overwrite with the IO values as-is**. Fieldbus-module rows go through the same policy — their
-specialness ends at the description composition.
+**brutal overwrite** (the IO FU / Location / Device replace the row's own H / I / J cells — H and
+I become plain values over the block formulas, which the formula cleaner reads as deliberate; the
+descriptions are written as-is; the comparison then stands on the row's own cells, so an
+overwritten row reads up to date). A row whose H/I are shared formulas cannot be overwritten
+headlessly and falls back to the append with a warning. Fieldbus-module rows go through the same
+policy — their specialness ends at the description composition.
 
 **The glossary** (optional): setup accepts the standard *Glossario Troubleshooting* workbook and
 the project's *Glossario ombra* — any sheet whose header row carries **EN plus language codes**
@@ -497,9 +589,14 @@ opening the SWP is for inspection — apply still refuses while it stays open); 
 Include toggle, on `_Glossary` the Use toggle, on `_Preview` the full-block toggle and the
 **SWP row** column (opens the SWP workbook at that row).
 
-**The preview** — double-click a Verdict/Coordinate cell (or *preview block*): a `_Preview` scratch
+**The preview** — the `_Preview` sheet **opens with the workspace** (already showing the first
+previewable row) and its tab sits **right after Workspace**, not at the far end of the strip. The
+three sheets you move between are colour-coded in the tab strip with the palette they use inside:
+**Home light blue**, **Workspace orange**, **_Preview yellow**. Double-click a Verdict/Coordinate
+cell (or *preview block*) to point it at another row: the scratch
 sheet renders the matched device block's 32-bit section as the SWP holds it — row number, tag
-type, entry, bit, the row's **FUnit (H) and Location (I)**, and every written column — the
+type, entry, bit, every written column in the SWP's own order — Export (B), I/O addr (G), the FLD as
+neighbours **FUnit (H) · Location (I) · Device (J)**, T.S. ref (L), the descriptions (T / U) — the
 target row highlighted, each changing cell showing `current → new`, and the final Q/R texts
 predicted from the cached values. Double-clicking the **"show full block"** toggle widens the
 view to the whole device — every section, with EVERY pending update of that device shown and

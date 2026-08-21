@@ -596,7 +596,7 @@ namespace ExcelPowerTools.UI
             string validation = ValidateSetup();
             if (validation != null)
             {
-                MessageBox.Show(this, validation, "Comparison Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ExcelPowerTools.Interop.Dialogs.Info(validation, "Comparison Project", this);
                 return;
             }
 
@@ -612,12 +612,9 @@ namespace ExcelPowerTools.UI
             }
             catch (Exception exception)
             {
-                MessageBox.Show(
-                    this,
+                ExcelPowerTools.Interop.Dialogs.Info(
                     "The confirmed lineage could not be materialized.\r\n\r\n" + exception.Message,
-                    "Comparison Project",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
+                    "Comparison Project", this);
             }
         }
 
