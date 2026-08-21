@@ -38,7 +38,7 @@ Undo/Redo reflect the Power Tools timeline.
 
 **Tools Hub** is a docked, searchable task pane with category filters for Compare, Files, Transform, Data,
 and Utilities. It exposes the complete catalog—including the less frequent file operations, workbook split,
-experimental IO-list bridge, developer shortcuts, About, and persistent behavior switches—without allowing
+the IO Pipeline tools, developer shortcuts, About, and persistent behavior switches—without allowing
 future modules to overwhelm the ribbon. A separate pane is retained per Excel window. Existing transactional
 editors and conflict prompts still open as dialogs from the Hub; they are intentionally not embedded as Form
 objects in the task pane. The implemented **Comparison** workspace can select and integrity-validate an existing
@@ -165,9 +165,16 @@ repeats these limits before it runs.
 - Source associations live for the current Excel process; reopening the original files rebuilds them.
   Closing a workspace with unsaved source-sheet values offers Save All before closing.
 
-## IO-list bridge (experimental)
+## IO Pipeline
 
-Three Hub commands under **Experimental** join a plant CSV to an electrical IO list. They target the
+The IO Pipeline is the plant-commissioning tool family: read-only pulls that compare a plant CSV
+against an electrical IO list, and the IO Bridge workspace that pushes corrections back to the real
+files. It lives in the Hub section **IO Pipeline**, on its ribbon groups, and under the `IoPipeline`
+namespaces (each feature removable as one unit).
+
+### IO-list pulls
+
+Three Hub commands join a plant CSV to an electrical IO list. They target the
 current IO-list format only; the pre-2026 layouts (a `PC Board Rack.Slot.Card` column, Siemens
 `I310.0` byte.bit addresses, mnemonics spread over `Q*`/`P*`/`ASi` sheets) are no longer read.
 
@@ -257,13 +264,13 @@ file. Every run is a single Power-Tools undo step, and each command ends with a 
 keyed, matched by address, matched by node, found only by mnemonic elsewhere, skipped as virtual, and
 carrying a ratio.
 
-## IO Bridge (experimental)
+### IO Bridge
 
 A dedicated workspace for the commissioning phase, when the IO list (electrical dept), its mnemonics
 (SW engineering) and the plant CSVs (machine controller) are corrected on both sides and IO-list
 additions must be integrated into the CSVs. Where the pull commands compare once and read-only, the
 IO Bridge **queues edits and applies them in batch to the real files** — CSVs through the byte-faithful
-CSV engine, the IO-list .xlsx directly via COM. Commands live on the ribbon group **IO Bridge [exp]**,
+CSV engine, the IO-list .xlsx directly via COM. Commands live on the ribbon group **IO Bridge**,
 in the Tools Hub, and (while a session is live) on the cell right-click menu.
 
 **Setup** (*open workspace*) — one IO-list workbook, which of its `R{rack}.S{slot}.C{card}` sheets, one
@@ -326,8 +333,198 @@ filter-hidden rows). An IO list already open in Excel is patched live and you ar
 saving; declining leaves the actions pending. Statuses flip only after a real write, the workspace
 rebuilds to show the new reality, and *clear history* drops Applied rows.
 
-To remove the whole feature: delete `src/ExcelPowerTools/Experimental/IoBridge`,
-`src/ExcelPowerTools.Core/Experimental/IoBridge`, `tests/ExcelPowerTools.Tests/Experimental/IoBridge`,
+To remove the whole feature: delete `src/ExcelPowerTools/IoPipeline/IoBridge`,
+`src/ExcelPowerTools.Core/IoPipeline/IoBridge`, `tests/ExcelPowerTools.Tests/IoPipeline/IoBridge`,
+the pane entries, the ribbon group and the three `AddIn.cs` event lines.
+
+### SWP Bridge
+
+The SWP workbook holds the plant's diagnosis data — states, alarms, warnings — one sheet per
+object type, each device a fixed block whose cells are formulas pulling template texts from a
+CONFIG_PLANT companion. The legacy VBA DiagnosticTool updated it blind; the SWP Bridge replaces
+that with a **reviewable, monodirectional (IO list → SWP) diff**: only cells that would actually
+change become pending actions, and a headless batch apply patches the file bytes. Commands live on
+the **SWP Bridge** ribbon group and in the Hub.
+
+**Setup** (*open workspace*) — pick the SWP file inside its dated version folder (`NN_dd-MMM-yyyy`);
+the system **root** (the parent) and the CONFIG_PLANT name derive from it, and a `swp-bridge.json`
+sidecar found at that root pre-fills everything else — returning to a system is one pick + OK.
+Then: plant type (**MSC** sorter / **ISPC** induction / **UPS** upstream / **SAFETY** for the
+direct-to-SCADA safety PLC — MSC-shaped mnemonics on a cabinet-only SWP) with the first-line and
+group parameters, the workspace's **second-language code** (a free 2-letter glossary code —
+PT, FR, IT, …), the IO-list workbook + its `R.S.C` card
+sheets, and OPTIONAL plant CSVs (Plant_Inputs and Busfield for coherence checks,
+Destination_Parameters for the sorter chute remap, Sensor and StrobeDevice for the upstream
+generators) plus the exported **Alarms_*.txt files** (multi-select) for the third coherence leg:
+every checked mnemonic must appear among the exported alarms and the exported texts must carry
+the row's Location and Device (description 2 checked only when exported). WHICH objects are
+checked and with WHAT index shift comes from the **`_Offsets` table** (below) — the official
+values reproduce the v49 "ddsng 9.4.2" semantics (MSC cabinets export +1, ISPC line cabinets
+1:1 with groups −1, UPS cabinets −1 with belts/zones 1:1, SAFETY 1:1 zero-based). The Workspace
+sheet's **Alarm strings** verdict column reads ok / not exported / text differs, with the details in
+`_Log`; a file whose tags repeat warns that the export was appended-to (ExcelLoader never
+overwrites — delete the old `Alarms_*.txt` and regenerate). An include/exclude **regex pair**
+extends the built-in diagnostic-mnemonic patterns — an include match is an explicit override and
+bypasses the length rules too. `.xls` is refused — save as `.xlsx` first. Identity fields
+(FUnit, Location, Device, Profinet name/IP, address, ID) are cleaned of known **stray
+characters** on read — the leaked Excel apostrophe, typographic quotes, backtick, zero-width
+characters, NBSP/tab — a deliberate DENYLIST (unknown characters pass through untouched
+rather than being silently deleted), with one `_Log` line per distinct cleaned value.
+
+A **Home** sheet opens the workspace: the guide, the color legend, and buttons for every command.
+
+**The Workspace sheet** (the spine) — one flat sheet, one row per diagnostic mnemonic in
+IO-list order: the IO side, the
+computed SWP coordinate (`DB_TAG.AlarmN>entry>bit`, the legacy address math ported verbatim —
+CABINET/CLASSDIAG for MSC and SAFETY with class types 62 CHUTE, 64 SCANNER, 66 CONTROL_ZONE,
+69 CHECK_POSITION, 73 CELL_TEST, 112 AIR_BLOWER and 113 ITEM_LOCATOR, CABI/BELT/ZONE →
+IL/ILGRP sheets for ISPC, ALLQ/ALLB/ALLZ quads → UP sheets for UPS, EMERGENCY→CABINETAL and
+EMERI_→ALLQ_ rewrites included — anchored at the START of the mnemonic, so command signals
+like `A_RESET_EMERGENCY` are neither rewritten nor treated as diagnostics),
+the row's CURRENT SWP values, the proposed values (blank when nothing changes) and the verdicts.
+The SWP-related headers wear **light orange** (the IO side stays blue) for a quick spot. Row
+states are font colors — green up-to-date, red missing/invalid/duplicate, orange label mismatch;
+pending "▸" cells carry the queue highlight (yellow pending, red conflict, blue applied
+externally). Two mnemonics resolving to the same SWP row are surfaced as **duplicates and queue
+nothing** (the legacy silently let the last one win). Rows without a bit address take their node
+from the ID column — numeric Profinet nodes and **AS-I `nA`/`nB` addresses** both count (the SWP
+receives `236.0.0` / `1A.0.0`); any other ID leaves the row addressless, its G untouched — this is
+how the sorter's virtual CLASSDIAG rows come through.
+
+**Overrides** — the `[bracketed]` columns are the editable exceptions and persist per mnemonic in
+the sidecar: *Mismatch OK* (the FU/Location mismatch is deliberate — silences its warning and
+verdict; the configured treatment still applies), *DB index* (reroute the device index,
+empty = AUTO), *Force IDs* (write the device even on belt alarms), and the two description
+overrides. Editing one recomputes the diff **in memory** — no file is re-read. `_Dictionary`
+(the description find→replace pairs, per language) and `_StrobeTemplates` (the strobe alarm
+blocks) are free-edit sheets saved on every change and applied on the next refresh.
+
+**Descriptions**: language-1/2 parts joined, dictionary-shortened in row order; a bus-module row
+(Profinet name column filled) instead composes
+`{bus-failure phrase} [{profinet name} - {ip}]`. With a glossary loaded, the **glossary is the
+authority for that phrase**: an IO-list description that IS an official entry (the FIELD BUS
+family — `FIELD BUS DEVICE FAILURE`, `FIELD BUS FAILURE - DRIVE/COUPLER/GATEWAY/…`) is kept with
+its official casing and glossary translation; anything else is replaced by the glossary's
+dedicated **`FIELD BUS MODULE FAILURE`** row (both languages) with a `_Log` warning naming the
+unofficial text. Per-language fallback constants serve only glossary-less workspaces (an
+internal table — the former `_Languages` sheet is gone). A blank language-2 falls back to language 1. On an FUnit/Location mismatch the
+mismatch **always warns** (`_Log`, Warning severity) — a deliberate mismatch is silenced per
+row with the persistent **[Mismatch OK]** override (generated rows are auto-silenced), which
+also clears the orange verdict; the warning's wording follows the row's FU/Location formula
+HEALTH: intact formulas mean a real configuration difference, broken ones note that the
+restoration is already queued (the formula cleaner) and that the comparison stands on the
+restored block values. What the mismatch does to the WRITES is one exclusive setup choice:
+**append identity to descriptions** (the compacted label lands in T/U, the device blanks, and
+template-only Q/R formulas — ones not referencing `T{row}`/`U{row}` — get the `&" "&T` extension
+automatically, since that is the only way the appended identity reaches the displayed text) or
+**overwrite with the IO values as-is**. Fieldbus-module rows go through the same policy — their
+specialness ends at the description composition.
+
+**The glossary** (optional): setup accepts the standard *Glossario Troubleshooting* workbook and
+the project's *Glossario ombra* — any sheet whose header row carries **EN plus language codes**
+parses; the shadow file wins on a shared phrase. Matching is whole-phrase only, in two tiers: a
+pair applies when the row's **Description permanent part equals its EN phrase** (trimmed,
+case-insensitive; the variable part rides along untranslated), or — field files split compliant
+texts across the two parts — when the **trimmed full description** equals it (consumed whole,
+the translation stands alone). Partial/substring matching was retired — a spliced phrase
+produced wrong sentences. Two modes, chosen in setup: **fill the gaps** (rows
+with IO-list language-2 keep it) or
+**glossary always wins**; either way, an IO-list language-2 that DISAGREES with the glossary is
+flagged in `_Log`. The **`_Glossary` sheet** shows the session-relevant pairs only — those that
+actually translate something here — with a ☑/☐ Use toggle (double-click), editable translations,
+and room to add custom EN→text pairs; decisions persist in the sidecar by EN phrase.
+
+The glossary also owns the **T.S. Ref cards**: its `Numero scheda` column maps every official
+phrase to its troubleshooting card, and when a row's composed description exactly matches an
+official phrase, that card is what gets written to column L — an IO list carrying a DIFFERENT
+card for the same phrase is flagged in `_Log` and loses ("the glossary wins"). Descriptions the
+glossary does not know (electrical specifics) keep their IO-list card, per the official rules
+(§12.2: electrical alarms' TS comes from the IO list). Two hard rules on top: an **empty
+composed T.S. Ref never blanks an existing SWP value** (the SCADA opens the troubleshooting
+manual from this code — a wrong section beats no action), and **IO-list alarms must end up
+with one**: a row with no card anywhere (IO list, glossary, SWP) wears **red on its T.S.
+columns** with a `_Log` warning naming the two remedies. Double-clicking any T.S. ref cell
+(blue-bordered) opens the **`_TSRef` lookup** — one row per TS_nnn card with all its English
+descriptors from the glossario alongside, jumped to the clicked card — for picking or
+verifying a card without leaving the workspace.
+
+**The `_Offsets` table** — the living copy of the index tables in *SWP and diagnostic
+configuration rules* (§4.9 sorter, §5.2 induct line, §7.10 upstream): one row per plant type and
+diagnosable object, holding the **mnemonic start index**, the **SWP table-entry start** (their
+difference re-addresses the join — e.g. ISPC/UPS mnemonics are 1-based over 0-based entries) and
+the **OPC-tag start** (their difference drives the alarm-strings match), plus the per-object
+**Alarm check** switch — only cabinet/belt/zone tag families can be verified, so CLASSDIAG-style
+objects ship unchecked instead of drowning `_Log` in false "not exported" errors. Edits persist
+**globally for every system and session** and recompute live; a row for an
+object not listed falls back to the plant family's defaults.
+
+**Official-rules checks** — beyond the coherence legs, every build audits against the
+configuration-rules document and reports to `_Log` (findings only, capped, nothing queued):
+exported rows or IO mnemonics on **bit 31/63** (the last bit of a DWORD is forbidden, §3.3), the
+same description exported twice within a device block's alarm+warning sections (§3.3), an
+exported row whose **priority E** is empty, zero, non-numeric or stored as text — with a gentler
+note when it strays from the alarm=2/warning=3 convention (§3.1) — and **locations containing
+`-`** (§3.8), on the IO side and on block headers. The busfield leg accepts BOTH valid
+configurations: the modern type-11 layout (element/bit left 0, §3.7) and the deprecated
+element/bit/warning encoding, mismatching only when neither fits; it also wants **node 0** (the
+Profinet controller) present (§3.2) and every **AS-I master** carrying the ignore-error flag
+(warning-on-fault 2 or 3, §4.8).
+
+**The formula cleaner** (the Cleanup VBA, absorbed): every build checks EVERY `#`-marked
+diagnostic sheet — STROBE included, targeted or not — for the structural damage hand edits leave
+behind. A bit row's FUnit (H) and Location (I) must be (shared) formulas pointing at their block
+header: a pasted value, a deleted cell or a formula dragged astray becomes a queued **repair**
+(`=H{header}` / `=I{header}`) reviewed and applied like any other action; a block header whose
+Location lost its `+` prefix is rebuilt from the electrical label, and a STROBE sheet's first
+header gets its `=MID(F15,4,12)` back. Virtual objects are exempt: a block whose header carries
+no FUnit or Location (SORTERSTATE, TRAIN, …) is healthy with those columns empty — no repair,
+no noise. Intact shared formulas are never touched — a repair whose
+cell healed in the meantime conflicts as moot. Optionally, setup takes a **reference SWP**: the
+target's formula structure is audited against the base's canonical block (sheets map by name or
+by suffix, rows fold by block length) and `_Log` reports columns whose formulas were lost and
+CONFIG_PLANT references pointing at the wrong template row — findings only, capped per sheet.
+
+**The queue** (`_Queue`) is diff-driven: every build recomputes the intended writes and reconciles
+them into the standing actions — include choices (☑/☐, double-click) and the first-seen old value
+survive, satisfied intents retire as *AppliedExternally*, vanished ones drop, moved files re-base
+with the evidence in the note. Everything persists in `swp-bridge.json` at the SWP root (atomic,
+`.bak`), one file per system, surviving every version-folder hop.
+
+**Double-clickable cells wear a blue border** everywhere: on the Workspace sheet,
+Verdict/Coordinate open the preview, **Row opens the IO-list workbook at that card-sheet row**
+and **SWP row opens the SWP workbook at the matched row** (reusing an already-open instance;
+opening the SWP is for inspection — apply still refuses while it stays open); on `_Queue` the
+Include toggle, on `_Glossary` the Use toggle, on `_Preview` the full-block toggle and the
+**SWP row** column (opens the SWP workbook at that row).
+
+**The preview** — double-click a Verdict/Coordinate cell (or *preview block*): a `_Preview` scratch
+sheet renders the matched device block's 32-bit section as the SWP holds it — row number, tag
+type, entry, bit, the row's **FUnit (H) and Location (I)**, and every written column — the
+target row highlighted, each changing cell showing `current → new`, and the final Q/R texts
+predicted from the cached values. Double-clicking the **"show full block"** toggle widens the
+view to the whole device — every section, with EVERY pending update of that device shown and
+labeled with the mnemonic that feeds it.
+
+**The dashboard** — a small live window on its own thread (it keeps painting while Excel is busy):
+the current phase, per-sheet tallies (activate a row to filter the Workspace sheet), the findings tail
+(activate to jump to the row), and Refresh / Apply / Cancel. `_Log` keeps the full findings list
+with jump links, and a `SwpBridge_Log.txt` lands next to the SWP on apply.
+
+**Apply** — headless, never through Excel: per-action **three-way check** (the cell must still hold
+the value the diff saw, else that action flags Conflict and the rest proceed), then the affected
+sheets are stream-rewritten in the file bytes (a 35 MB CHUTE sheet never becomes a DOM; untouched
+sheets are not rewritten at all). Writing `X` (the rules-§3.1 format; existing lowercase `x`
+never churns) over the Export template formula converts it to a literal; missing cells are inserted in column order; the edit stamp lands in AA; the calculation
+chain is dropped and full-recalc-on-load set, so the next Excel open recomputes the descriptions.
+The patched workbook is **re-read and verified before anything is written**; the write is atomic
+with `.bak`. Two modes, chosen in setup: **in place**, or **version folder** — the next
+`NN_dd-MMM-yyyy` sibling is created, CONFIG_PLANT copied alongside (the `[1]` external link is
+folder-relative, so it keeps resolving), and the COPY patched; the original is never written.
+Statuses flip only after the disk write returns, and the workspace rebuilds to show the new
+reality. The Cell-class SWP workbooks (`CELL_1`, `DIGITAL_ANTENNA_1`) are out of scope.
+
+To remove the whole feature: delete `src/ExcelPowerTools/IoPipeline/SwpBridge`,
+`src/ExcelPowerTools.Core/IoPipeline/SwpBridge`, `tests/ExcelPowerTools.Tests/IoPipeline/SwpBridge`,
 the pane entries, the ribbon group and the three `AddIn.cs` event lines.
 
 ## Project layout
@@ -348,6 +545,7 @@ dotnet test                      # runs the unit tests
 Output (Release): `src/ExcelPowerTools/bin/Release/net48/publish/`
 - **`ExcelPowerTools-AddIn64-packed.xll`** ← use this (your Excel is 64-bit)
 - `ExcelPowerTools-AddIn-packed.xll` (32-bit Excel)
+- **`ExcelPowerTools.Portable.exe`** — the no-install session launcher (below)
 
 The `-packed` files are self-contained (all managed code embedded); the loose
 `bin/.../net48/ExcelPowerTools-AddIn64.xll` also works but keeps its DLLs alongside.
@@ -362,6 +560,24 @@ The `-packed` files are self-contained (all managed code embedded); the loose
    ("Keep Values Only") works everywhere.
 
 To update: rebuild, replace the `.xll` (Excel must be closed), reopen Excel.
+
+## No-install alternative: the portable session launcher
+
+For users who can't — or won't — go through the add-in install: hand out the `publish/` folder
+(the exe plus the packed `.xll` files, produced together by the Release build) and have them
+double-click **`ExcelPowerTools.Portable.exe`**. It starts a **dedicated Excel instance** and
+loads the add-in into it via `Application.RegisterXLL` — **for that session only**: nothing is
+installed, no registry, no admin rights, and their normal Excel setup and any already-open
+windows are untouched. Everything works exactly as installed (ribbon, Hub, commands, bridges);
+closing that Excel ends the session.
+
+Details it handles by itself: it detects the running Excel's bitness and picks the matching
+packed file (with a precise message if only the other one is present); a file carrying the
+downloaded-from-internet mark is offered an unblock (the right-click ▸ Properties ▸ Unblock
+action) before Excel gets to refuse it; and if the Trust Center still declines the load, it
+names the exact settings to check and offers a retry. The one thing it cannot bypass is a
+policy that blocks unsigned add-ins outright — that audience needs the pure-automation host
+planned in `docs/portable-host-plan.md`.
 
 ## Deliberate differences from the old VBA
 

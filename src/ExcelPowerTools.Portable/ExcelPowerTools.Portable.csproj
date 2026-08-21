@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ExcelPowerTools.Portable</RootNamespace>
+    <AssemblyName>ExcelPowerTools.Portable</AssemblyName>
+    <Version>1.4.0</Version>
+    <Description>Portable session launcher: starts Excel and loads the ExcelPowerTools add-in for that session only — nothing installed.</Description>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Build-order only: the launcher lands next to the packed .xll files, so the add-in must
+         have packed before the copy below runs. No assembly reference exists or should. -->
+    <ProjectReference Include="..\ExcelPowerTools\ExcelPowerTools.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+  </ItemGroup>
+
+  <!-- The add-in's publish folder (where ExcelDnaPack drops the packed .xll files) becomes the
+       complete hand-out directory: exe + packed add-ins, zip and go. -->
+  <Target Name="CopyLauncherNextToPackedAddIn" AfterTargets="Build">
+    <PropertyGroup>
+      <PackedFolder>..\ExcelPowerTools\bin\$(Configuration)\net48\publish\</PackedFolder>
+    </PropertyGroup>
+    <ItemGroup>
+      <LauncherFiles Include="$(TargetPath)" />
+      <LauncherFiles Include="$(TargetPath).config" Condition="Exists('$(TargetPath).config')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(LauncherFiles)" DestinationFolder="$(PackedFolder)"
+          Condition="Exists('$(PackedFolder)')" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

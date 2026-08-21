@@ -1,0 +1,476 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.RegularExpressions;
+using ExcelPowerTools.Core.Csv;
+using ExcelPowerTools.Core.Files;
+using ExcelPowerTools.Core.IoPipeline.SwpBridge;
+using ExcelPowerTools.Interop;
+
+namespace ExcelPowerTools.IoPipeline.SwpBridge
+{
+    /// <summary>
+    /// Build/refresh orchestration. The long phases (SWP streaming read, filter, diff) are
+    /// headless and run curtain-free with the dashboard as the progress surface; only the
+    /// COM-visible rendering happens behind the state guard the commands hold. The dashboard's
+    /// Cancel flag is polled between phases — a phase in flight always completes.
+    /// </summary>
+    internal static class SwpBridgeBuilder
+    {
+        /// <summary>Everything from documents to model. NO COM except the IO-list read.</summary>
+        public static void BuildModel(dynamic app, SwpBridgeSession session)
+        {
+            SwpBridgeSettings settings = session.Settings;
+            session.BuildLog = new List<SwpLogEntry>();
+            List<SwpLogEntry> log = session.BuildLog;
+            SwpBridgeDashboard dashboard = session.Dashboard;
+
+            dashboard?.PostPhase("Reading the IO list…");
+            session.IoRows = SwpBridgeCardReader.Read(app, settings.IoListPath, settings.CardSheets, log);
+            if (session.IoRows.Count == 0)
+                throw new InvalidOperationException("None of the selected card sheets yielded any rows.");
+            ThrowIfCancelled(session);
+
+            dashboard?.PostPhase("Reading the SWP (" + settings.SwpFileName + ")…");
+            session.SwpBytes = ReadFileBytes(session.SwpPath, "SWP workbook");
+            ThrowIfCancelled(session);
+
+            session.BaseIndex = null;
+            if (File.Exists(settings.ReferenceSwpPath))
+            {
+                dashboard?.PostPhase("Reading the reference SWP…");
+                session.BaseIndex = SwpSheetReader.Read(ReadFileBytes(settings.ReferenceSwpPath, "reference SWP"),
+                    new string[0], session.BuildLog, includeAllDiagnosticSheets: true);
+                ThrowIfCancelled(session);
+            }
+
+            session.AlarmStringsFiles.Clear();
+            foreach (string path in settings.AlarmStringsPaths)
+            {
+                if (!File.Exists(path))
+                {
+                    session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                        "alarm-strings file not found: " + path));
+                    continue;
+                }
+                try { session.AlarmStringsFiles.Add((path, File.ReadAllLines(path))); }
+                catch (Exception ex)
+                {
+                    session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                        "alarm-strings file could not be read: " + path + " — " + ex.Message));
+                }
+            }
+
+            LoadGlossaries(session);
+            RecomputeFromMemory(session);
+        }
+
+        /// <summary>Parses the optional glossary workbooks into the session baselines.</summary>
+        private static void LoadGlossaries(SwpBridgeSession session)
+        {
+            SwpBridgeSettings settings = session.Settings;
+            session.GlossaryStandard = new List<SwpGlossaryPair>();
+            session.GlossaryShadow = new List<SwpGlossaryPair>();
+            bool anyPath = File.Exists(settings.GlossaryPath1) || File.Exists(settings.GlossaryPath2);
+            if (!anyPath) return;
+
+            string code = ResolveSecondLanguageCode(settings);
+            if (code.Length == 0)
+            {
+                session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "glossaries are selected but no 2nd-language code is set (setup takes the " +
+                    "2-letter glossary code, e.g. PT) — nothing can translate"));
+                return;
+            }
+
+            session.Dashboard?.PostPhase("Reading the glossaries (" + code + ")…");
+            if (File.Exists(settings.GlossaryPath1))
+                session.GlossaryStandard = SwpGlossary.Parse(
+                    ReadFileBytes(settings.GlossaryPath1, "glossary workbook"), code, "standard", session.BuildLog);
+            if (File.Exists(settings.GlossaryPath2))
+                session.GlossaryShadow = SwpGlossary.Parse(
+                    ReadFileBytes(settings.GlossaryPath2, "glossary ombra workbook"), code, "shadow", session.BuildLog);
+        }
+
+        internal static string ResolveSecondLanguageCode(SwpBridgeSettings settings) =>
+            NormalizeLanguageCode(settings.SecondLanguage);
+
+        /// <summary>
+        /// The setting is a free 2-letter glossary code ("PT"); sidecars from before the free
+        /// input carry a language NAME ("Português") and resolve through the _Languages table.
+        /// </summary>
+        internal static string NormalizeLanguageCode(string value)
+        {
+            string trimmed = (value ?? "").Trim();
+            if (trimmed.Length == 2) return trimmed.ToUpperInvariant();
+            foreach ((string name, string code, _) in SwpBridgeRegistry.GetLanguages())
+                if (string.Equals(name, trimmed, StringComparison.OrdinalIgnoreCase))
+                    return (code ?? "").Trim().ToUpperInvariant();
+            return "";
+        }
+
+        /// <summary>
+        /// Filter → generators → map/diff → coherence → queue reconcile, all from the session's
+        /// in-memory data. Override and dictionary edits re-enter here without touching a file.
+        /// </summary>
+        public static void RecomputeFromMemory(SwpBridgeSession session)
+        {
+            SwpBridgeSettings settings = session.Settings;
+            SwpBridgeDashboard dashboard = session.Dashboard;
+            var log = new List<SwpLogEntry>();
+
+            dashboard?.PostPhase("Filtering diagnostic mnemonics…");
+            var filterOptions = new SwpFilterOptions
+            {
+                PlantType = settings.PlantType,
+                IncludeMnemonics = TryRegex(settings.IncludeRegex, log),
+                ExcludeMnemonics = TryRegex(settings.ExcludeRegex, log),
+            };
+            session.Entries = SwpMnemonicFilter.Run(session.IoRows, filterOptions, log);
+
+            if (settings.PlantType == SwpPlantType.Ups)
+            {
+                if (File.Exists(settings.SensorCsvPath))
+                {
+                    dashboard?.PostPhase("Generating belt-photocell alarms…");
+                    session.Entries.AddRange(SwpUpsGenerators.GeneratePhotocellAlarms(
+                        File.ReadAllLines(settings.SensorCsvPath), session.IoRows, log));
+                }
+                if (File.Exists(settings.StrobeDeviceCsvPath) && session.Sidecar.StrobeTemplates.Count > 0)
+                {
+                    dashboard?.PostPhase("Generating strobe-device alarms…");
+                    session.Entries.AddRange(SwpUpsGenerators.GenerateStrobeAlarms(
+                        File.ReadAllLines(settings.StrobeDeviceCsvPath), session.Sidecar.StrobeTemplates, log));
+                }
+            }
+            ThrowIfCancelled(session);
+
+            dashboard?.PostPhase("Indexing the SWP sheets…");
+            session.IndexRules = SwpBridgeRegistry.GetIndexRules();
+            var targetSheets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var chuteMap = LoadChuteMap(settings, log);
+            var overrides = session.OverridesByMnemonic();
+            foreach (DiagnosticEntry entry in session.Entries)
+            {
+                SwpRowOverride o = overrides.TryGetValue(entry.Mnemonic, out SwpRowOverride v) ? v : null;
+                SwpMappedMnemonic mapped = SwpAddressMap.Map(entry.Mnemonic, settings.PlantType,
+                    settings.FirstLineId, settings.GroupIndex, o?.SwpDbIndex, chuteMap, session.IndexRules);
+                if (mapped.Ok) targetSheets.Add(mapped.Coordinate.SheetName);
+            }
+            // Target sheets for the join, plus EVERY '#'-marked diagnostic sheet for the
+            // formula-integrity check — hand-edit damage hides anywhere, STROBE included.
+            session.Index = SwpSheetReader.Read(session.SwpBytes, targetSheets, log,
+                includeAllDiagnosticSheets: true);
+            WarnOnParameterShapedMisses(session.Index, log);
+            ThrowIfCancelled(session);
+
+            dashboard?.PostPhase("Computing the diff…");
+            ResolveBusFailureConstants(settings, out string busFailure1, out string busFailure2);
+
+            session.GlossaryMerged = SwpGlossary.Merge(
+                session.GlossaryStandard, session.GlossaryShadow, session.Sidecar.GlossaryTweaks);
+            List<SwpGlossaryPair> glossary = session.GlossaryMerged.Count > 0 ? session.GlossaryMerged : null;
+
+            session.Model = SwpDiff.Build(session.Entries, session.Index, new SwpDiffOptions
+            {
+                PlantType = settings.PlantType,
+                FirstLineId = settings.FirstLineId,
+                GroupIndex = settings.GroupIndex,
+                TrustConfigPlant = settings.TrustConfigPlant,
+                UpdateDescriptionFormulas = settings.UpdateDescriptionFormulas,
+                MismatchMode = settings.MismatchMode,
+                BusFailureLang1 = busFailure1,
+                BusFailureLang2 = busFailure2,
+                GlossaryPairs = glossary,
+                GlossaryTranslateAlways = settings.GlossaryTranslateAlways,
+                Dictionary1 = session.Sidecar.Dictionary1,
+                Dictionary2 = session.Sidecar.Dictionary2,
+                ChuteMap = chuteMap,
+                Overrides = overrides,
+                IndexRules = session.IndexRules,
+            }, log);
+
+            dashboard?.PostPhase("Checking the formulas…");
+            List<SwpProposedEdit> repairs = SwpFormulaCheck.ProposeRepairs(session.Index, log);
+            if (repairs.Count > 0)
+            {
+                session.Model.Edits.AddRange(repairs);
+                log.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    repairs.Count + " formula repair(s) queued — broken H/I references, header " +
+                    "locations or strobe formulas (see the lines above)"));
+            }
+            if (session.BaseIndex != null)
+            {
+                dashboard?.PostPhase("Auditing against the reference SWP…");
+                SwpFormulaCheck.AuditAgainstBase(session.Index, session.BaseIndex, log);
+            }
+
+            // The official-rules content audits (duplicated strings, forbidden bits, priority
+            // column, dashed locations) — log findings over the whole indexed SWP.
+            SwpContentChecks.Run(session.Index, log);
+
+            AnnotateCoherence(session, log);
+
+            // Session relevance: pairs whose EN phrase IS some row's full permanent part.
+            var glossaryKeys = new List<string>();
+            foreach (SwpSpineRow row in session.Model.Rows) glossaryKeys.Add(row.GlossaryKey);
+            session.GlossaryRelevant = SwpGlossary.RelevantPairs(
+                session.GlossaryMerged, glossaryKeys, out session.GlossaryOccurrences);
+
+            dashboard?.PostPhase("Reconciling the queue…");
+            session.Queue.ReconcileFromDiff(session.Model.Edits,
+                action => ResolveCurrent(session.Index, action),
+                DateTime.UtcNow.ToString("O"));
+
+            session.BuildLog.AddRange(log);
+            dashboard?.PostModel(session);
+        }
+
+        /// <summary>The file's current value for an action's target cell; null when the row is gone.</summary>
+        internal static string ResolveCurrent(SwpWorkbookIndex index, SwpAction action)
+        {
+            if (index == null || !index.Sheets.TryGetValue(action.Sheet, out SwpSheetIndex sheet)) return null;
+
+            if (action.CoordinateKey.StartsWith("header>", StringComparison.Ordinal))
+            {
+                if (!int.TryParse(action.CoordinateKey.Substring("header>".Length), out int headerRow) ||
+                    !sheet.BlockHeaderByRow.TryGetValue(headerRow, out SwpBlockHeader header))
+                    return null;
+                return action.Field == SwpField.HeaderFormulaI ? header.LocationIFormula : header.LocationI;
+            }
+
+            if (!sheet.RowsByKey.TryGetValue(action.CoordinateKey, out SwpRowSnapshot row)) return null;
+            switch (action.Field)
+            {
+                case SwpField.ExportB: return row.ExportB;
+                case SwpField.AddressG: return row.AddressG;
+                case SwpField.DeviceJ: return row.DeviceJ;
+                case SwpField.TsRefL: return row.TsRefL;
+                case SwpField.Desc1T: return row.Desc1T;
+                case SwpField.Desc2U: return row.Desc2U;
+                case SwpField.FormulaQ: return row.FormulaQ;
+                case SwpField.FormulaR: return row.FormulaR;
+                case SwpField.FormulaH: return row.FormulaH;
+                case SwpField.FormulaI: return row.FormulaI;
+                default: return "";
+            }
+        }
+
+        /// <summary>
+        /// The first language (row 1 of the global table — the SWP's Description 1 language)
+        /// and the workspace's chosen second language, resolved to their bus-failure texts.
+        /// The second language is a code ("PT"); rows match by Code, with the language NAME
+        /// still accepted for pre-free-input sidecars. No matching row → empty text (a bus
+        /// module's description 2 then falls back to description 1).
+        /// </summary>
+        internal static void ResolveBusFailureConstants(SwpBridgeSettings settings,
+            out string lang1, out string lang2)
+        {
+            List<(string Name, string Code, string Text)> languages = SwpBridgeRegistry.GetLanguages();
+            lang1 = languages.Count > 0 ? languages[0].Text : SwpDescriptions.DefaultBusFailureText;
+            lang2 = "";
+            string code = NormalizeLanguageCode(settings.SecondLanguage);
+            foreach ((string name, string rowCode, string text) in languages)
+                if ((code.Length > 0 && string.Equals((rowCode ?? "").Trim(), code, StringComparison.OrdinalIgnoreCase)) ||
+                    string.Equals(name, settings.SecondLanguage, StringComparison.OrdinalIgnoreCase))
+                {
+                    lang2 = text;
+                    break;
+                }
+        }
+
+        /// <summary>Renders every workspace sheet. Call inside an ExcelStateGuard.</summary>
+        public static void RenderWorkspace(dynamic workbook, SwpBridgeSession session)
+        {
+            session.Dashboard?.PostPhase("Rendering the workspace…");
+
+            RemovePreviewSheet(workbook);
+            dynamic spine = SwpBridgeQueueSheet.FindSheet(workbook, SwpBridgeWorkspace.SpineSheetName)
+                ?? workbook.Worksheets(1);
+            SwpBridgeSpineSheet.Render(spine, session);
+            SwpBridgeQueueSheet.Render(workbook, session);
+            SwpBridgeAuxSheets.RenderLog(workbook, session);
+            SwpBridgeAuxSheets.RenderDictionary(workbook, session);
+            SwpBridgeAuxSheets.RenderGlossary(workbook, session);
+            SwpBridgeAuxSheets.RenderOffsets(workbook);
+            SwpBridgeAuxSheets.RenderStrobeTemplates(workbook, session);
+            SwpBridgeAuxSheets.RenderHome(workbook, session);
+            try { workbook.Worksheets(SwpBridgeWorkspace.SpineSheetName).Activate(); } catch { }
+
+            session.Dashboard?.PostPhase("Ready");
+            session.Dashboard?.PostModel(session);
+        }
+
+        /// <summary>
+        /// The override/dictionary/language fast path: recompute in memory + re-render the
+        /// generated sheets. Runs INSIDE a SheetChange handler, so deliberately NO
+        /// ExcelStateGuard — toggling ScreenUpdating there defers the repaint until the next
+        /// full refresh (the io-bridge lesson); the caller's reentry gate already stops the
+        /// event cascade.
+        /// </summary>
+        public static void RecomputeAndRerender(SwpBridgeSession session)
+        {
+            dynamic app = ExcelApp.App;
+            dynamic workbook = SwpBridgeWorkspace.FindLiveWorkbook(app);
+            if (workbook == null) return;
+
+            RecomputeFromMemory(session);
+            dynamic spine = SwpBridgeQueueSheet.FindSheet(workbook, SwpBridgeWorkspace.SpineSheetName);
+            if (spine != null) SwpBridgeSpineSheet.Render(spine, session);
+            SwpBridgeQueueSheet.Render(workbook, session);
+            SwpBridgeAuxSheets.RenderLog(workbook, session);
+            SwpBridgeAuxSheets.RenderGlossary(workbook, session);
+            session.SaveSidecarNow();
+        }
+
+        internal static void RemovePreviewSheet(dynamic workbook)
+        {
+            dynamic preview = SwpBridgeQueueSheet.FindSheet(workbook, SwpBridgeWorkspace.PreviewSheetName);
+            if (preview == null) return;
+            dynamic app = ExcelApp.App;
+            bool prevAlerts = true;
+            try { prevAlerts = (bool)app.DisplayAlerts; app.DisplayAlerts = false; } catch { }
+            try { preview.Delete(); } catch { }
+            finally { try { app.DisplayAlerts = prevAlerts; } catch { } }
+        }
+
+        // ---- pieces -------------------------------------------------------------------------
+
+        private static void AnnotateCoherence(SwpBridgeSession session, List<SwpLogEntry> log)
+        {
+            SwpBridgeSettings settings = session.Settings;
+            CsvDocument plantInputs = null, busfield = null;
+            if (File.Exists(settings.PlantInputsCsvPath))
+            {
+                session.Dashboard?.PostPhase("Checking Plant_Inputs…");
+                plantInputs = LoadCsv(settings.PlantInputsCsvPath, log);
+            }
+            if (File.Exists(settings.BusfieldCsvPath))
+            {
+                session.Dashboard?.PostPhase("Checking the busfield…");
+                busfield = LoadCsv(settings.BusfieldCsvPath, log);
+            }
+
+            List<SwpAlarmString> alarms = null;
+            if (session.AlarmStringsFiles.Count > 0)
+            {
+                session.Dashboard?.PostPhase("Checking the alarm strings…");
+                alarms = new List<SwpAlarmString>();
+                foreach ((string path, string[] lines) in session.AlarmStringsFiles)
+                    alarms.AddRange(SwpAlarmStrings.Parse(lines, settings.PlantType,
+                        Path.GetFileName(path), log));
+                log.Add(SwpLogEntry.For(SwpLogSeverity.Info,
+                    alarms.Count + " exported alarm string(s) loaded from " +
+                    session.AlarmStringsFiles.Count + " file(s)"));
+            }
+
+            if (plantInputs != null || busfield != null || alarms != null)
+                SwpCoherence.Annotate(session.Model, plantInputs, busfield, settings.PlantType, log,
+                    alarms, settings.FirstLineId, settings.GroupIndex, session.IndexRules);
+        }
+
+        private static CsvDocument LoadCsv(string path, List<SwpLogEntry> log)
+        {
+            SourceReadState state = AtomicFileStore.ReadSource(path, out byte[] bytes, out string error);
+            if (state != SourceReadState.Present)
+            {
+                log.Add(SwpLogEntry.For(SwpLogSeverity.Warning, "could not read " + path + ": " + error));
+                return null;
+            }
+            return CsvFile.Load(bytes);
+        }
+
+        private static IReadOnlyDictionary<string, int> LoadChuteMap(SwpBridgeSettings settings, List<SwpLogEntry> log)
+        {
+            if (settings.PlantType != SwpPlantType.Msc || !File.Exists(settings.DestinationParamsCsvPath))
+                return null;
+            try
+            {
+                return SwpDestinationParams.ParseChuteMap(File.ReadAllLines(settings.DestinationParamsCsvPath), log);
+            }
+            catch (Exception ex)
+            {
+                log.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "Destination_Parameters could not be read: " + ex.Message));
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// A resolved sheet name that does not exist usually means a wrong first-line/group
+        /// parameter — one prominent hint beats a hundred per-row verdicts.
+        /// </summary>
+        private static void WarnOnParameterShapedMisses(SwpWorkbookIndex index, List<SwpLogEntry> log)
+        {
+            if (index.MissingSheets.Count == 0) return;
+            log.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                index.MissingSheets.Count + " resolved sheet name(s) do not exist in the SWP (" +
+                string.Join(", ", index.MissingSheets) + ") — the workbook has: " +
+                string.Join(", ", index.AllSheetNames) +
+                ". A wrong plant type / first line / group parameter produces exactly this."));
+        }
+
+        internal static byte[] ReadFileBytes(string path) => ReadFileBytes(path, "file");
+
+        /// <summary>
+        /// Reads a source workbook, and when it cannot be read (typically: open in Excel, which
+        /// locks it) offers close-it-then-Retry instead of failing the whole build. Cancel
+        /// throws OperationCanceledException — the commands' cancelled path, which keeps an
+        /// existing workspace alive on refresh.
+        /// </summary>
+        internal static byte[] ReadFileBytes(string path, string label)
+        {
+            while (true)
+            {
+                SourceReadState state = AtomicFileStore.ReadSource(path, out byte[] bytes, out string error);
+                if (state == SourceReadState.Present) return bytes;
+
+                // The prompt must surface ABOVE the topmost build curtain — an ownerless
+                // MessageBox would hide beneath it and the build would look hung.
+                System.Windows.Forms.DialogResult choice;
+                using (var owner = new System.Windows.Forms.Form
+                {
+                    TopMost = true,
+                    ShowInTaskbar = false,
+                    FormBorderStyle = System.Windows.Forms.FormBorderStyle.None,
+                    StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen,
+                    Size = new System.Drawing.Size(1, 1),
+                    Opacity = 0,
+                })
+                {
+                    owner.Show();
+                    choice = System.Windows.Forms.MessageBox.Show(owner,
+                        "The " + label + " could not be read:\n" + path +
+                        (string.IsNullOrEmpty(error) ? "" : "\n\n" + error) +
+                        "\n\nIt may be open in Excel or locked by another program — close it " +
+                        "there, then press Retry.",
+                        "SWP Bridge",
+                        System.Windows.Forms.MessageBoxButtons.RetryCancel,
+                        System.Windows.Forms.MessageBoxIcon.Warning);
+                }
+                if (choice != System.Windows.Forms.DialogResult.Retry)
+                    throw new OperationCanceledException("the " + label + " stayed unreadable");
+            }
+        }
+
+        private static Regex TryRegex(string pattern, List<SwpLogEntry> log)
+        {
+            if (string.IsNullOrWhiteSpace(pattern)) return null;
+            try { return new Regex(pattern.Trim(), RegexOptions.CultureInvariant); }
+            catch (Exception ex)
+            {
+                log.Add(SwpLogEntry.For(SwpLogSeverity.Warning, "regex \"" + pattern + "\" does not parse: " + ex.Message));
+                return null;
+            }
+        }
+
+        private static void ThrowIfCancelled(SwpBridgeSession session)
+        {
+            if (session.CancelRequested)
+            {
+                session.CancelRequested = false;
+                throw new OperationCanceledException("cancelled from the dashboard");
+            }
+        }
+    }
+}

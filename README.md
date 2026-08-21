@@ -62,7 +62,7 @@ The ribbon is intentionally limited to frequent, context-driven actions:
 - **Clean & analyze** — natural sort, Deduplicate, and Column stats.
 
 **Tools Hub** opens a searchable task pane on the right side of the active Excel window. It contains the
-full command catalog, including export/backup, workbook utilities, experimental IO-list tools, developer
+full command catalog, including export/backup, workbook utilities, the IO Pipeline tools, developer
 shortcuts, and the **Track manual edits** / **Intercept native delimited opens** settings. Each Excel window
 keeps its own reusable Hub pane, so the ribbon remains useful as more modules are added without turning into
 an ever-growing row of buttons. Its **Comparison** workspace is now implemented: a selected `Review.xlsx` is

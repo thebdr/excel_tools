@@ -33,9 +33,14 @@ namespace ExcelPowerTools
             _app.SheetChange += CsvCommands.OnSheetChange;
 
             // IO Bridge edit capture — bridge sheets are excluded from manual tracking, so order is free.
-            _app.SheetChange += Experimental.IoBridge.IoBridgeEditCapture.OnSheetChange;
-            _app.SheetBeforeDoubleClick += Experimental.IoBridge.IoBridgeEditCapture.OnSheetBeforeDoubleClick;
-            _app.WorkbookBeforeClose += Experimental.IoBridge.IoBridgeEditCapture.OnWorkbookBeforeClose;
+            _app.SheetChange += IoPipeline.IoBridge.IoBridgeEditCapture.OnSheetChange;
+            _app.SheetBeforeDoubleClick += IoPipeline.IoBridge.IoBridgeEditCapture.OnSheetBeforeDoubleClick;
+            _app.WorkbookBeforeClose += IoPipeline.IoBridge.IoBridgeEditCapture.OnWorkbookBeforeClose;
+
+            // SWP Bridge edit capture — same exclusion arrangement as the IO Bridge.
+            _app.SheetChange += IoPipeline.SwpBridge.SwpBridgeEditCapture.OnSheetChange;
+            _app.SheetBeforeDoubleClick += IoPipeline.SwpBridge.SwpBridgeEditCapture.OnSheetBeforeDoubleClick;
+            _app.WorkbookBeforeClose += IoPipeline.SwpBridge.SwpBridgeEditCapture.OnWorkbookBeforeClose;
 
             // Selection broadcast for live panels (Column Stats).
             _app.SheetSelectionChange += OnSelectionChangedHub;
@@ -58,9 +63,12 @@ namespace ExcelPowerTools
             _app.WorkbookAfterSave -= ComparisonReviewLaunchManager.OnWorkbookAfterSave;
             _app.WorkbookBeforeClose -= OnWorkbookBeforeCloseHub;
             _app.SheetChange -= CsvCommands.OnSheetChange;
-            _app.SheetChange -= Experimental.IoBridge.IoBridgeEditCapture.OnSheetChange;
-            _app.SheetBeforeDoubleClick -= Experimental.IoBridge.IoBridgeEditCapture.OnSheetBeforeDoubleClick;
-            _app.WorkbookBeforeClose -= Experimental.IoBridge.IoBridgeEditCapture.OnWorkbookBeforeClose;
+            _app.SheetChange -= IoPipeline.IoBridge.IoBridgeEditCapture.OnSheetChange;
+            _app.SheetBeforeDoubleClick -= IoPipeline.IoBridge.IoBridgeEditCapture.OnSheetBeforeDoubleClick;
+            _app.WorkbookBeforeClose -= IoPipeline.IoBridge.IoBridgeEditCapture.OnWorkbookBeforeClose;
+            _app.SheetChange -= IoPipeline.SwpBridge.SwpBridgeEditCapture.OnSheetChange;
+            _app.SheetBeforeDoubleClick -= IoPipeline.SwpBridge.SwpBridgeEditCapture.OnSheetBeforeDoubleClick;
+            _app.WorkbookBeforeClose -= IoPipeline.SwpBridge.SwpBridgeEditCapture.OnWorkbookBeforeClose;
             _app.SheetActivate -= CsvCommands.OnSheetActivate;
             _app.SheetBeforeDelete -= CsvCommands.OnSheetBeforeDelete;
             _app.SheetSelectionChange -= Interop.ManualEditTracker.OnSelectionChange;

@@ -296,6 +296,74 @@ namespace ExcelPowerTools.Core.Text
     /// </summary>
     public static class MiniJsonWriter
     {
+        /// <summary>
+        /// Reformats compact JSON with newlines and two-space indentation — the sidecars are
+        /// read by humans too. Purely structural (string-content aware); the parser ignores
+        /// the added whitespace, so round-trips are untouched.
+        /// </summary>
+        public static string Indent(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return json ?? "";
+            var sb = new StringBuilder(json.Length * 2);
+            int depth = 0;
+            bool inString = false;
+
+            void NewLine()
+            {
+                sb.Append('\n');
+                sb.Append(' ', depth * 2);
+            }
+
+            for (int i = 0; i < json.Length; i++)
+            {
+                char c = json[i];
+                if (inString)
+                {
+                    sb.Append(c);
+                    if (c == '\\' && i + 1 < json.Length) sb.Append(json[++i]);
+                    else if (c == '"') inString = false;
+                    continue;
+                }
+                switch (c)
+                {
+                    case '"':
+                        inString = true;
+                        sb.Append(c);
+                        break;
+                    case '{':
+                    case '[':
+                        sb.Append(c);
+                        if (i + 1 < json.Length && (json[i + 1] == '}' || json[i + 1] == ']'))
+                        {
+                            sb.Append(json[++i]);   // {} and [] stay on one line
+                        }
+                        else
+                        {
+                            depth++;
+                            NewLine();
+                        }
+                        break;
+                    case '}':
+                    case ']':
+                        depth--;
+                        NewLine();
+                        sb.Append(c);
+                        break;
+                    case ',':
+                        sb.Append(c);
+                        NewLine();
+                        break;
+                    case ':':
+                        sb.Append(": ");
+                        break;
+                    default:
+                        sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
+        }
+
         public static void Property(StringBuilder json, string name, string value, bool first)
         {
             if (!first) json.Append(',');

@@ -308,6 +308,9 @@ namespace ExcelPowerTools.Commands
 
                 created = true;
                 workbook = app.Workbooks.Add(Xl.xlWBATWorksheet);
+                // The window title instead of "Book1" — the caption is free to set on an
+                // unsaved workbook (the workbook NAME is not; it would need a save).
+                try { workbook.Windows(1).Caption = "PT_CSV"; } catch { }
                 string id = null;
                 try
                 {

@@ -32,7 +32,7 @@ namespace ExcelPowerTools.UI
         private static readonly Color Accent = Color.FromArgb(75, 78, 225);
         private static readonly Color Border = Color.FromArgb(221, 226, 236);
         private static readonly string[] SectionOrder =
-            { "Comparison", "Files", "Transform", "Data", "History", "Workbook", "Experimental", "Settings", "Developer" };
+            { "Comparison", "Files", "Transform", "Data", "History", "Workbook", "IoPipeline", "Settings", "Developer" };
 
         private readonly TextBox _search = new TextBox();
         private readonly Button _clearSearch = new Button();
@@ -527,7 +527,7 @@ namespace ExcelPowerTools.UI
                 case "Data": title = "CLEAN & ANALYZE"; break;
                 case "History": title = "HISTORY"; break;
                 case "Workbook": title = "WORKBOOK"; break;
-                case "Experimental": title = "EXPERIMENTAL · IO TOOLS"; break;
+                case "IoPipeline": title = "IO PIPELINE"; break;
                 case "Settings": title = "BEHAVIOR SETTINGS"; break;
                 default: title = "DEVELOPER & DIAGNOSTICS"; break;
             }
@@ -992,36 +992,39 @@ namespace ExcelPowerTools.UI
                     "SPLIT", utility, WorkbookCommands.ExportSheetsAsFiles, "workbook sheets export", section: "Workbook"),
 
                 ToolDefinition.Command("Utilities", "Build IO //Address", "Add the helper address column to an Inputs/Outputs source.",
-                    "ADDR", utility, Experimental.IoListCommands.BuildAddressColumn, "node offset bit", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "ADDR", utility, IoPipeline.IoListCommands.BuildAddressColumn, "node offset bit", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "Pull IO-list data", "Match addresses and fill mnemonic, ID and description fields.",
-                    "IO", utility, Experimental.IoListCommands.PullFromIoList, "plant card board number", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "IO", utility, IoPipeline.IoListCommands.PullFromIoList, "plant card board number", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "Pull mnemonics", "Fill the //Mnemonic helper on an R.S.C card sheet from plant source files.",
-                    "MN", utility, Experimental.IoListCommands.PullMnemonicsIntoIoList, "io list bridge card sheet", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "MN", utility, IoPipeline.IoListCommands.PullMnemonicsIntoIoList, "io list bridge card sheet", section: "IoPipeline"),
 
                 ToolDefinition.Command("Utilities", "IO Bridge: open workspace", "Join an IO list with its plant CSVs; edits queue and apply in batch.",
-                    "BR", utility, Experimental.IoBridge.IoBridgeCommands.OpenWorkspace, "io bridge workspace queue bidirectional", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "BR", utility, IoPipeline.IoBridge.IoBridgeCommands.OpenWorkspace, "io bridge workspace queue bidirectional", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "IO Bridge: row actions", "Queue linked-field updates, integrate, disable/enable or delete for the selected row.",
-                    "BR▸", utility, Experimental.IoBridge.IoBridgeCommands.RowActions, "io bridge integrate copy across disable delete", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "BR▸", utility, IoPipeline.IoBridge.IoBridgeCommands.RowActions, "io bridge integrate copy across disable delete", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "IO Bridge: apply batch", "Write the included pending actions to the CSVs and the IO-list workbook.",
-                    "BR✔", utility, Experimental.IoBridge.IoBridgeCommands.ApplyBatch, "io bridge apply write batch", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "BR✔", utility, IoPipeline.IoBridge.IoBridgeCommands.ApplyBatch, "io bridge apply write batch", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "IO Bridge: refresh", "Rebuild the bridge sheets from the current documents; the queue re-anchors.",
-                    "BR↻", utility, Experimental.IoBridge.IoBridgeCommands.RefreshWorkspace, "io bridge rebuild reanchor", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "BR↻", utility, IoPipeline.IoBridge.IoBridgeCommands.RefreshWorkspace, "io bridge rebuild reanchor", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "IO Bridge: column config", "Save the _Columns sheet to the registry and regroup the workspace.",
-                    "BR⚙", utility, Experimental.IoBridge.IoBridgeCommands.ApplyColumnConfig, "io bridge columns groups hidden", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "BR⚙", utility, IoPipeline.IoBridge.IoBridgeCommands.ApplyColumnConfig, "io bridge columns groups hidden", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "IO Bridge: clear history", "Drop applied actions from the queue, keeping pending and conflicting ones.",
-                    "BR🗑", utility, Experimental.IoBridge.IoBridgeCommands.ClearHistory, "io bridge purge history", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "BR🗑", utility, IoPipeline.IoBridge.IoBridgeCommands.ClearHistory, "io bridge purge history", section: "IoPipeline"),
                 ToolDefinition.Command("Utilities", "IO Bridge: expanded view", "Unfold a multi-mnemonic point into one temporary row per constituent.",
-                    "BR⤢", utility, Experimental.IoBridge.IoBridgeCommands.ExpandView, "io bridge expand multi mnemonic", "EXPERIMENTAL",
-                    section: "Experimental"),
+                    "BR⤢", utility, IoPipeline.IoBridge.IoBridgeCommands.ExpandView, "io bridge expand multi mnemonic", section: "IoPipeline"),
+
+                ToolDefinition.Command("Utilities", "SWP Bridge: open workspace", "Diff the IO list's diagnostic mnemonics against the SWP workbook.",
+                    "SW", utility, IoPipeline.SwpBridge.SwpBridgeCommands.OpenWorkspace, "swp bridge diagnostic alarms warnings diff", section: "IoPipeline"),
+                ToolDefinition.Command("Utilities", "SWP Bridge: apply batch", "Patch the SWP headlessly — in place with .bak, or into a new dated version folder.",
+                    "SW✔", utility, IoPipeline.SwpBridge.SwpBridgeCommands.ApplyBatch, "swp bridge apply write patch", section: "IoPipeline"),
+                ToolDefinition.Command("Utilities", "SWP Bridge: refresh", "Re-read the IO list and SWP, recompute the diff, re-render.",
+                    "SW↻", utility, IoPipeline.SwpBridge.SwpBridgeCommands.RefreshWorkspace, "swp bridge rebuild recompute", section: "IoPipeline"),
+                ToolDefinition.Command("Utilities", "SWP Bridge: preview block", "Show the selected row's SWP section with the incoming values highlighted.",
+                    "SW⤢", utility, IoPipeline.SwpBridge.SwpBridgeCommands.PreviewSelection, "swp bridge preview block section", section: "IoPipeline"),
+                ToolDefinition.Command("Utilities", "SWP Bridge: dashboard", "Progress, live tallies, per-sheet breakdown and the findings tail.",
+                    "SW▦", utility, IoPipeline.SwpBridge.SwpBridgeCommands.ShowDashboard, "swp bridge dashboard tallies progress", section: "IoPipeline"),
+                ToolDefinition.Command("Utilities", "SWP Bridge: clear history", "Drop applied actions from the queue, keeping pending and conflicting ones.",
+                    "SW🗑", utility, IoPipeline.SwpBridge.SwpBridgeCommands.ClearHistory, "swp bridge purge history", section: "IoPipeline"),
 
                 ToolDefinition.Setting("Utilities", "Track manual edits", "Include typing, delete and paste-over-selection in the timeline.",
                     "REC", history, () => ManualEditTracker.Enabled, ManualEditTracker.SetEnabled, "undo setting", "Settings"),
@@ -1259,7 +1262,7 @@ namespace ExcelPowerTools.UI
                     _badge = new SmoothLabel
                     {
                         Text = tool.Badge,
-                        Size = new Size(tool.Badge == "EXPERIMENTAL" ? 84 : 66, 19),
+                        Size = new Size(66, 19),
                         Location = new Point(0, 12),
                         Anchor = AnchorStyles.Top | AnchorStyles.Right,
                         TextAlign = ContentAlignment.MiddleCenter,

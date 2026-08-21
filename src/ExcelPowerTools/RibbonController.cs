@@ -99,7 +99,7 @@ namespace ExcelPowerTools
                   screentip='Preview and apply regex replacements'/>
         </group>
 
-        <group id='ptIoBridge' label='IO Bridge [exp]'>
+        <group id='ptIoBridge' label='IO Bridge'>
           <button id='ptIobOpen' label='Open workspace' size='large' imageMso='FileOpen' onAction='OnIobOpen'
                   screentip='Build the IO Bridge workspace'
                   supertip='Join an IO-list workbook with its Plant Inputs/Outputs CSVs. Edits queue instead of applying; a batch apply writes the real files.'/>
@@ -109,6 +109,18 @@ namespace ExcelPowerTools
                   screentip='Write the included pending actions to the CSVs and the IO-list workbook'/>
           <button id='ptIobRefresh' label='Refresh' imageMso='RefreshAll' onAction='OnIobRefresh'
                   screentip='Rebuild the bridge sheets from the current documents; the queue re-anchors'/>
+        </group>
+
+        <group id='ptSwpBridge' label='SWP Bridge'>
+          <button id='ptSwpOpen' label='Open workspace' size='large' imageMso='FileOpen' onAction='OnSwpOpen'
+                  screentip='Build the SWP Bridge workspace'
+                  supertip='Join the IO list&#39;s diagnostic mnemonics to the SWP workbook as a reviewable diff; a headless batch apply patches the SWP.'/>
+          <button id='ptSwpApply' label='Apply queue' imageMso='ReviewAcceptChange' onAction='OnSwpApply'
+                  screentip='Write the included pending actions into the SWP (in place or into a new dated version folder)'/>
+          <button id='ptSwpRefresh' label='Refresh' imageMso='RefreshAll' onAction='OnSwpRefresh'
+                  screentip='Re-read the documents, recompute the diff, re-render the workspace'/>
+          <button id='ptSwpDashboard' label='Dashboard' imageMso='ChartPlacement' onAction='OnSwpDashboard'
+                  screentip='Show the SWP Bridge dashboard (progress, tallies, findings)'/>
         </group>
 
         <group id='ptData' label='Clean &amp; analyze'>
@@ -235,14 +247,19 @@ namespace ExcelPowerTools
         public void OnToggleTrackEdits(IRibbonControl control, bool pressed) => ManualEditTracker.SetEnabled(pressed);
         public bool GetTrackEditsPressed(IRibbonControl control) => ManualEditTracker.Enabled;
         public void OnSplitWorkbook(IRibbonControl control) => WorkbookCommands.ExportSheetsAsFiles();
-        public void OnXBuildAddress(IRibbonControl control) => Experimental.IoListCommands.BuildAddressColumn();
-        public void OnXPullIoData(IRibbonControl control) => Experimental.IoListCommands.PullFromIoList();
-        public void OnXPullMnemonics(IRibbonControl control) => Experimental.IoListCommands.PullMnemonicsIntoIoList();
+        public void OnXBuildAddress(IRibbonControl control) => IoPipeline.IoListCommands.BuildAddressColumn();
+        public void OnXPullIoData(IRibbonControl control) => IoPipeline.IoListCommands.PullFromIoList();
+        public void OnXPullMnemonics(IRibbonControl control) => IoPipeline.IoListCommands.PullMnemonicsIntoIoList();
 
-        public void OnIobOpen(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.OpenWorkspace();
-        public void OnIobRowActions(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.RowActions();
-        public void OnIobApply(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.ApplyBatch();
-        public void OnIobRefresh(IRibbonControl control) => Experimental.IoBridge.IoBridgeCommands.RefreshWorkspace();
+        public void OnIobOpen(IRibbonControl control) => IoPipeline.IoBridge.IoBridgeCommands.OpenWorkspace();
+        public void OnIobRowActions(IRibbonControl control) => IoPipeline.IoBridge.IoBridgeCommands.RowActions();
+        public void OnIobApply(IRibbonControl control) => IoPipeline.IoBridge.IoBridgeCommands.ApplyBatch();
+        public void OnIobRefresh(IRibbonControl control) => IoPipeline.IoBridge.IoBridgeCommands.RefreshWorkspace();
+
+        public void OnSwpOpen(IRibbonControl control) => IoPipeline.SwpBridge.SwpBridgeCommands.OpenWorkspace();
+        public void OnSwpApply(IRibbonControl control) => IoPipeline.SwpBridge.SwpBridgeCommands.ApplyBatch();
+        public void OnSwpRefresh(IRibbonControl control) => IoPipeline.SwpBridge.SwpBridgeCommands.RefreshWorkspace();
+        public void OnSwpDashboard(IRibbonControl control) => IoPipeline.SwpBridge.SwpBridgeCommands.ShowDashboard();
         public void OnOpenInVs(IRibbonControl control) => DevCommands.OpenSolutionInVisualStudio();
         public void OnOpenRepo(IRibbonControl control) => DevCommands.OpenRepoFolder();
         public void OnOpenBuildOutput(IRibbonControl control) => DevCommands.OpenBuildOutputFolder();

@@ -5,9 +5,9 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>ExcelPowerTools</RootNamespace>
     <AssemblyName>ExcelPowerTools</AssemblyName>
-    <Version>1.3.0</Version>
-    <AssemblyVersion>1.3.0.0</AssemblyVersion>
-    <FileVersion>1.3.0.0</FileVersion>
+    <Version>1.4.0</Version>
+    <AssemblyVersion>1.4.0.0</AssemblyVersion>
+    <FileVersion>1.4.0.0</FileVersion>
     <!-- Excel-DNA builds both 32- and 64-bit .xll hosts around this AnyCPU assembly. -->
     <PlatformTarget>AnyCPU</PlatformTarget>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
