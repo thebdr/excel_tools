@@ -1048,7 +1048,10 @@ downloaded-from-internet mark is offered an unblock (the right-click ▸ Propert
 action) before Excel gets to refuse it; and if the Trust Center still declines the load, it
 names the exact settings to check and offers a retry. The one thing it cannot bypass is a
 policy that blocks unsigned add-ins outright — that audience needs the pure-automation host
-planned in `docs/portable-host-plan.md`.
+planned in `docs/portable-host-plan.md`. In the field the launcher never reached 1:1 with the
+add-in (most features work; a few do not), so the add-in install is what users are told to use.
+The next generation makes the out-of-process host the only host — see
+`docs/powertools2-direction.md`.
 
 ## Deliberate differences from the old VBA
 
