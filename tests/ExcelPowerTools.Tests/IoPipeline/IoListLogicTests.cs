@@ -175,6 +175,30 @@ namespace ExcelPowerTools.Tests.IoPipeline
             Assert.Equal(expected, IoListLogic.IsVirtualType(type));
         }
 
+        [Theory]
+        [InlineData("", true, "0")]      // the list's normal case is an EMPTY cell
+        [InlineData("0", true, "0")]
+        [InlineData(" 1 ", true, "1")]
+        [InlineData("NC", false, null)]  // nothing the CSV accepts
+        [InlineData("2", false, null)]
+        [InlineData(null, true, "0")]
+        public void Normal_condition_reads_as_csv_logic(string io, bool readable, string logic)
+        {
+            Assert.Equal(readable, IoListLogic.TryNormalConditionToLogic(io, out string actual));
+            Assert.Equal(logic, actual);
+        }
+
+        [Theory]
+        [InlineData("0", true)]
+        [InlineData("1", true)]
+        [InlineData("", false)]
+        [InlineData("01", false)]
+        [InlineData("NO", false)]
+        public void Csv_logic_is_exactly_zero_or_one(string logic, bool valid)
+        {
+            Assert.Equal(valid, IoListLogic.IsValidLogic(logic));
+        }
+
         [Fact]
         public void Signal_type_table_follows_the_controller_defines()
         {

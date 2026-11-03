@@ -154,6 +154,28 @@ namespace ExcelPowerTools.Core.IoPipeline
         }
 
         /// <summary>
+        /// The IO list's "Normal condition" as the CSV's Logic field spells it. The list leaves the
+        /// cell EMPTY for the normal case (524 of 751 rows on FVT LOWER SORTER) and writes "1" for
+        /// NC, so "" and "0" both mean Logic 0; the CSV itself accepts only 0 or 1. False for any
+        /// other text — a value that must not be written into either file.
+        /// </summary>
+        public static bool TryNormalConditionToLogic(string normalCondition, out string logic)
+        {
+            string t = (normalCondition ?? "").Trim();
+            if (t.Length == 0 || t == "0") { logic = "0"; return true; }
+            if (t == "1") { logic = "1"; return true; }
+            logic = null;
+            return false;
+        }
+
+        /// <summary>True when a CSV Logic value is one the controller accepts: exactly 0 or 1.</summary>
+        public static bool IsValidLogic(string logic)
+        {
+            string t = (logic ?? "").Trim();
+            return t == "0" || t == "1";
+        }
+
+        /// <summary>
         /// True for bus-diagnostic signals (CSV Type 11, e.g. "CABINETAL00162"). They address a DEVICE, not
         /// a bit: offset/bit are 0 and the join runs on the node alone.
         /// </summary>

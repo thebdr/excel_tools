@@ -80,7 +80,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                 ? RowDescription(rows[0]) + "\n\nQueue which action?"
                 : rows.Count + " selected signal rows.\n\nQueue which action for each applicable row?") +
                 "  (press an action's letter, Enter to queue)";
-            int pick = Dialogs.SelectOne(prompt, labels, "IO Bridge — row actions");
+            int pick = Dialogs.SelectOne(prompt, labels, "IO Bridge — row actions", monospaced: true);
             if (pick < 0) return;
 
             choices[pick].Perform();
@@ -141,16 +141,16 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
         {
             var choices = new List<Choice>();
 
-            AddBulkLinked(choices, session, map, rows, LinkedField.Mnemonic, "mnemonic");
-            AddBulkLinked(choices, session, map, rows, LinkedField.Address, "address");
-            AddBulkLinked(choices, session, map, rows, LinkedField.NormalCondition, "normal condition");
+            AddBulkLinked(choices, session, map, rows, LinkedField.Mnemonic, "Mnemonic");
+            AddBulkLinked(choices, session, map, rows, LinkedField.Address, "Address");
+            AddBulkLinked(choices, session, map, rows, LinkedField.NormalCondition, "Normal condition");
 
             var describable = rows.FindAll(r =>
                 r.Kind != BridgeRowKind.CsvOnly && r.Csv != null && !r.Csv.IsMulti);
             if (describable.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeyDescription + " — Update description on CSV — up to " + describable.Count + " row(s)",
+                    Label = Line(KeyDescription, "Description", "IOL → CSV", Count(describable.Count)),
                     Perform = () =>
                     {
                         foreach (BridgeRow row in describable)
@@ -170,7 +170,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             if (integrable.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeyIntegrate + " — Integrate into CSV (create the records) — " + integrable.Count + " row(s)",
+                    Label = Line(KeyIntegrate, "Create CSV record", "from IOL", Count(integrable.Count)),
                     Perform = () => QueueIntegrateMany(session, map, integrable),
                 });
 
@@ -179,7 +179,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             if (twins.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeyType + " — Change the CSV type of the virtual twins (make them real) — " + twins.Count + " row(s)",
+                    Label = Line(KeyType, "CSV type", "virtual twin → real", Count(twins.Count)),
                     Perform = () => QueueTypeChangeMany(session, twins),
                 });
 
@@ -187,7 +187,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             if (enabled.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeyDisable + " — Disable the CSV signals ('#') — " + enabled.Count + " row(s)",
+                    Label = Line(KeyDisable, "Disable CSV record", "", Values("@", "#") + Count(enabled.Count)),
                     Perform = () => { foreach (BridgeRow r in enabled) QueueRowState(session, r, currentlyDisabled: false); },
                 });
 
@@ -195,7 +195,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             if (disabled.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeyEnable + " — Enable the CSV signals (remove '#') — " + disabled.Count + " row(s)",
+                    Label = Line(KeyEnable, "Enable CSV record", "", Values("#", "@") + Count(disabled.Count)),
                     Perform = () => { foreach (BridgeRow r in disabled) QueueRowState(session, r, currentlyDisabled: true); },
                 });
 
@@ -203,7 +203,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             if (deletable.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeyDelete + " — Delete the CSV rows — " + deletable.Count + " row(s)",
+                    Label = Line(KeyDelete, "Delete CSV record", "", Count(deletable.Count)),
                     Perform = () => { foreach (BridgeRow r in deletable) QueueDelete(session, r); },
                 });
 
@@ -228,13 +228,13 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             if (csvSide.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeysFor(pair).Csv + " — Update " + label + " on CSV (from IO) — " + csvSide.Count + " row(s)",
+                    Label = Line(KeysFor(pair).Csv, label, "IOL → CSV", Count(csvSide.Count)),
                     Perform = () => { foreach (LinkedValues v in csvSide) v.QueueCsv(); },
                 });
             if (ioSide.Count > 0)
                 choices.Add(new Choice
                 {
-                    Label = KeysFor(pair).Io + " — Update " + label + " on IO list (from CSV) — " + ioSide.Count + " row(s)",
+                    Label = Line(KeysFor(pair).Io, label, "CSV → IOL", Count(ioSide.Count)),
                     Perform = () => { foreach (LinkedValues v in ioSide) v.QueueIo(); },
                 });
         }
@@ -282,16 +282,16 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
 
             if (isSpine && singleCsv)
             {
-                AddLinkedPair(choices, session, map, row, LinkedField.Mnemonic, "mnemonic");
-                AddLinkedPair(choices, session, map, row, LinkedField.Address, "address");
-                AddLinkedPair(choices, session, map, row, LinkedField.NormalCondition, "normal condition");
+                AddLinkedPair(choices, session, map, row, LinkedField.Mnemonic, "Mnemonic");
+                AddLinkedPair(choices, session, map, row, LinkedField.Address, "Address");
+                AddLinkedPair(choices, session, map, row, LinkedField.NormalCondition, "Normal condition");
                 AddDescriptionToCsv(choices, session, map, row);
             }
             else if (isSpine && hasCsv)
             {
                 // Multi-record point: IO-side updates still make sense; CSV-side ones are ambiguous.
-                AddLinkedPair(choices, session, map, row, LinkedField.Mnemonic, "mnemonic", ioSideOnly: true);
-                AddLinkedPair(choices, session, map, row, LinkedField.NormalCondition, "normal condition", ioSideOnly: true);
+                AddLinkedPair(choices, session, map, row, LinkedField.Mnemonic, "Mnemonic", ioSideOnly: true);
+                AddLinkedPair(choices, session, map, row, LinkedField.NormalCondition, "Normal condition", ioSideOnly: true);
             }
 
             if (isSpine && !hasCsv && row.Signal.Mnemonic.Trim().Length > 0)
@@ -299,7 +299,8 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                 if (row.Kind == BridgeRowKind.Signal)
                     choices.Add(new Choice
                     {
-                        Label = KeyIntegrate + " — Integrate this signal into the CSV (create the record)",
+                        Label = Line(KeyIntegrate, "Create CSV record", "from IOL",
+                            "(" + row.Signal.Mnemonic + " @ " + row.Signal.Address + ")"),
                         Perform = () =>
                         {
                             if (!CoreIoListLogic.TryParseAddress(row.RawBitText, out char dir, out _, out _, out _))
@@ -315,7 +316,8 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     choices.Add(new Choice
                     {
                         // A BUS module IS type 11 by definition — no prompt.
-                        Label = KeyIntegrate + " — Integrate this bus module into the CSV (type 11)",
+                        Label = Line(KeyIntegrate, "Create CSV record", "from IOL",
+                            "(" + CoreIoListLogic.StripBusPrefix(row.Signal.Mnemonic) + " @ " + row.Signal.Address + ", type 11)"),
                         Perform = () => QueueIntegrate(session, map, row, "11"),
                     });
             }
@@ -325,7 +327,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                 {
                     // The twin looks like the signal but acquires nothing from the field: give it a
                     // real type (same picker as Integrate); the address update then follows as usual.
-                    Label = KeyType + " — Change the CSV type (virtual twin, type " + row.CsvValues[CsvCanonical.Type] + " → real signal)",
+                    Label = Line(KeyType, "CSV type", "virtual twin → real", Values(row.CsvValues[CsvCanonical.Type], "…")),
                     Perform = () =>
                     {
                         string type = PromptCsvType(row.Csv.File == BridgeTarget.InputsCsv,
@@ -339,12 +341,14 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                 bool disabled = row.Csv.Disabled;
                 choices.Add(new Choice
                 {
-                    Label = disabled ? KeyEnable + " — Enable the CSV signal (remove '#')" : KeyDisable + " — Disable the CSV signal ('#')",
+                    Label = disabled
+                        ? Line(KeyEnable, "Enable CSV record", "", Values("#", "@"))
+                        : Line(KeyDisable, "Disable CSV record", "", Values("@", "#")),
                     Perform = () => QueueRowState(session, row, disabled),
                 });
                 choices.Add(new Choice
                 {
-                    Label = KeyDelete + " — Delete the CSV row",
+                    Label = Line(KeyDelete, "Delete CSV record", "", ""),
                     Perform = () => QueueDelete(session, row),
                 });
             }
@@ -374,13 +378,13 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                 if (!ioSideOnly && values.CsvNew != values.CsvOld && CsvAlignAllowed(row, pair))
                     choices.Add(new Choice
                     {
-                        Label = csvKey + " — Update " + label + " on CSV  (\"" + Shorten(values.CsvOld) + "\" → \"" + Shorten(values.CsvNew) + "\")",
+                        Label = Line(csvKey, label, "IOL → CSV", Values(values.CsvOld, values.CsvNew)),
                         Perform = () => values.QueueCsv(),
                     });
                 if (values.IoNew != values.IoOld && IoAlignAllowed(row, pair))
                     choices.Add(new Choice
                     {
-                        Label = ioKey + " — Update " + label + " on IO list  (\"" + Shorten(values.IoOld) + "\" → \"" + Shorten(values.IoNew) + "\")",
+                        Label = Line(ioKey, label, "CSV → IOL", Values(values.IoOld, values.IoNew)),
                         Perform = () => values.QueueIo(),
                     });
             }
@@ -445,9 +449,19 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     string ioValue = IoValue(row, ioCol);
                     string csvValue = row.CsvValues[CsvCanonical.Logic];
 
+                    // The two sides compare through the CSV's spelling: an empty IO-list cell IS
+                    // Logic 0, so "" vs "0" is agreement, never a pair of opposite updates. A side
+                    // holding something neither file accepts offers nothing in its direction —
+                    // the CSV takes only 0/1, and junk never crosses over.
+                    bool ioReadable = CoreIoListLogic.TryNormalConditionToLogic(ioValue, out string ioAsLogic);
+                    bool csvReadable = CoreIoListLogic.IsValidLogic(csvValue);
+                    string csvNew = ioReadable ? ioAsLogic : csvValue;                      // unreadable IO → no CSV update
+                    string ioNew = csvReadable && (!ioReadable || ioAsLogic != csvValue.Trim())
+                        ? csvValue.Trim() : ioValue;                                        // unreadable CSV → no IO update
+
                     values = MakeSetPair(session, map, row, pair,
-                        csvFieldCanonical: CsvCanonical.Logic, csvOld: csvValue, csvNew: ioValue,
-                        ioFieldHeader: "normalcondition", ioOld: ioValue, ioNew: csvValue);
+                        csvFieldCanonical: CsvCanonical.Logic, csvOld: csvValue, csvNew: csvNew,
+                        ioFieldHeader: "normalcondition", ioOld: ioValue, ioNew: ioNew);
                     return true;
                 }
                 case LinkedField.Address:
@@ -470,8 +484,8 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     bool offCard = row.Csv != null && row.Csv.Moved && row.Csv.OtherCard;
                     if (offCard)
                     {
-                        csvComposite += " (card " + row.Csv.CsvCard + ")";
-                        ioComposite += " (card " + map.Model.Card + ")";
+                        csvComposite += " · card " + row.Csv.CsvCard;
+                        ioComposite += " · card " + map.Model.Card;
                     }
 
                     var result = new LinkedValues
@@ -533,7 +547,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
 
             choices.Add(new Choice
             {
-                Label = KeyDescription + " — Update description on CSV  (\"" + Shorten(csvValue) + "\" → \"" + Shorten(description) + "\")",
+                Label = Line(KeyDescription, "Description", "IOL → CSV", Values(csvValue, description)),
                 Perform = () => QueueCsvSet(session, row, LinkedField.Description, CsvCanonical.Description, csvValue, description),
             });
         }
@@ -715,9 +729,10 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             BridgeTarget target = isInput ? BridgeTarget.InputsCsv : BridgeTarget.OutputsCsv;
             CsvColumnsMap csvMap = isInput ? session.Model.InputsMap : session.Model.OutputsMap;
 
-            // Normal condition from the IO list when the column exists, else the neutral default.
+            // Normal condition from the IO list ("" and "0" are Logic 0); anything unreadable, or
+            // no column at all, takes the neutral 0 — the CSV accepts nothing but 0/1.
             int ncCol = IoColumnByKey(map, row, session, "normalcondition");
-            string logic = ncCol >= 0 && IoValue(row, ncCol).Trim().Length > 0 ? IoValue(row, ncCol).Trim() : "0";
+            if (ncCol < 0 || !CoreIoListLogic.TryNormalConditionToLogic(IoValue(row, ncCol), out string logic)) logic = "0";
 
             var fields = new string[csvMap.Headers.Count];
             for (int i = 0; i < fields.Length; i++) fields[i] = "0";
@@ -771,6 +786,20 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             try { return (bool)sheet.Rows(row).Hidden; }
             catch { return false; }   // unreadable → treat as visible rather than silently drop it
         }
+
+        // ---- labels: one shape for every entry ---------------------------------------------------
+        //   K — Field              IOL → CSV   ("old" → "new")
+        // The field is the column's own word, the two place names are "IO list" and "CSV" in the
+        // order the write goes, and the tail is what changes. Padded so the columns line up in the
+        // picker's list, which this menu opens in a monospaced face.
+
+        private static string Line(string key, string field, string direction, string tail) =>
+            key + " — " + field.PadRight(20) + direction.PadRight(12) + tail;
+
+        private static string Values(string oldValue, string newValue) =>
+            "(\"" + Shorten(oldValue) + "\" → \"" + Shorten(newValue) + "\")";
+
+        private static string Count(int rows) => "— " + rows + " row(s)";
 
         private static string Shorten(string value) =>
             value == null ? "" : value.Length <= 24 ? value : value.Substring(0, 24) + "…";

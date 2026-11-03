@@ -14,12 +14,16 @@ namespace ExcelPowerTools.Interop
         /// cancelled. With a single option the caller should not be asking — this still prompts.
         /// The window sizes itself to the longest option and is user-resizable.
         /// </summary>
-        public static int SelectOne(string prompt, string[] options, string caption = null)
+        public static int SelectOne(string prompt, string[] options, string caption = null, bool monospaced = false)
         {
             if (options == null || options.Length == 0) return -1;
 
             // Two points larger than the system dialog font — these lists carry dense signal names.
-            using (var font = new Font(SystemFonts.MessageBoxFont.FontFamily, SystemFonts.MessageBoxFont.Size + 2f))
+            // Monospaced on request, for lists whose entries are padded into columns (the IO Bridge
+            // row-action menu): under a proportional face the columns only roughly line up.
+            using (var font = monospaced
+                ? new Font(FontFamily.GenericMonospace, SystemFonts.MessageBoxFont.Size + 1f)
+                : new Font(SystemFonts.MessageBoxFont.FontFamily, SystemFonts.MessageBoxFont.Size + 2f))
             {
                 // Wide enough for the longest option (within reason) so no label is cut off.
                 int longest = 0;

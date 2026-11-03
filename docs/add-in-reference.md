@@ -376,8 +376,8 @@ swapped pair is not mis-paired with whichever unrelated row now occupies the old
 never robs the sheet it belongs to; the row then also reads `· card N`, and only **A** is offered:
 it moves the record to the IO row's address AND card (the Card field is set too), since an IO-list
 address cannot name another card. A name the CSV carries twice is never treated as a move. The existing address actions
-align either side: **A — Update address on CSV** (the record moves to the IO row's address; only the
-node/offset/bit parts that differ are queued) and **B — Update address on IO list** (the list takes the
+align either side: **A — Address IOL → CSV** (the record moves to the IO row's address; only the
+node/offset/bit parts that differ are queued) and **B — Address CSV → IOL** (the list takes the
 record's address). An alignment is **not offered on the side where the destination is already taken**
 — another record at the IO address, or another IO row at the CSV record's address (a swap or a
 shifted block) — because it would collide; the other side stays available.
@@ -387,7 +387,7 @@ LOOKS like the signal but acquires nothing from the field. Such a record is the 
 the join binds it to the IO row flagged — row label `Signal · virtual twin`, verdict `virtual`
 (never the clean green), a **red outline** around its CSV block — instead of leaving the row
 "missing" (which would offer an integrate the apply then reports as "applied externally", the
-record being already there). The row action **T — Change the CSV type** gives the twin a real
+record being already there). The row action **T — CSV type virtual twin → real** gives the twin a real
 type through the same picker Integrate uses (queued as a Type field update, resolved by mnemonic
 at apply); the address update then follows as for any row. A real record at the address always
 wins over a twin; virtuals the compare-virtuals regex opted in are *expected* and keep joining as
@@ -416,10 +416,15 @@ SETS, and those CSV cells are view-only (per-record work goes through the expand
 module without its type-11 record reads `missing` like any gap.
 
 **Editing** — typing into IO or CSV data cells **queues** the change (the cell keeps the typed value,
-painted pending-yellow immediately; typing the old value back unqueues). *Row actions* — with
+painted pending-yellow immediately; typing the old value back unqueues). *Row actions* — every entry reads the same way, `K — Field  IOL → CSV  ("old" → "new")` in a monospaced picker,
+the arrow being the direction of the write (`A — Address  IOL → CSV  ("37.4.0" → "37.1.0")`,
+`X — Disable CSV record  ("@" → "#")`, `I — Create CSV record  from IOL  (NAME @ addr)`) — with
 letter accelerators, on one row or a whole selection, **visible rows only** (a selection drawn
 over a filtered sheet spans the hidden rows too; the action lands only on the rows you can see) — queue the linked-pair updates in either
-direction (M/N mnemonic, A/B address, C/D condition), description→CSV (E), **integrate** (I;
+direction (M/N mnemonic, A/B address, C/D condition — the IO list's *Normal condition* reads
+through the CSV's spelling: an **empty cell is Logic 0**, `1` is Logic 1, so `""` vs `0` is
+agreement and never a pair of opposite updates; the CSV Logic field takes **only 0 or 1**, and a
+side holding anything else offers no update in its direction), description→CSV (E), **integrate** (I;
 signals ask the CSV Type once per direction, bus modules go straight in as type 11 with the `BUS_`
 prefix dropped; empty-mnemonic spares are never integrated), disable/enable (X/V) and delete (Z).
 The CSV **description** is composed exactly as the export tool writes it —
