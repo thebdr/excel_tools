@@ -220,12 +220,123 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             target.BlockHeaderByRow.Clear();
             target.BlockHeaderByRow[181] = target.BlockHeaders[0];
             target.BitRows[0].RowNumber = 183;
+            // The reader stamps every bit row with its own header; a fixture that moves the row
+            // without moving this modelled a snapshot the reader cannot produce.
+            target.BitRows[0].BlockHeaderRow = 181;
 
             var log = new List<SwpLogEntry>();
             SwpFormulaCheck.AuditAgainstBase(Index(target), Index(baseSheet), log);
 
             Assert.Contains(log, l => l.Message.Contains("row 183") && l.Message.Contains("col Q") &&
                                       l.Message.Contains("formula was lost"));
+        }
+
+        [Fact]
+        public void A_cabinet_table_is_not_audited_for_a_lost_ts_ref_formula()
+        {
+            // Column L on a cabinet table is TYPED — the cards are assigned by hand — while the
+            // reference file carries a formula there. Auditing it column-blind reported every
+            // hand-filled row as damage.
+            const int colL = 12;                       // L, the T.S. reference card
+            SwpSheetIndex baseSheet = Sheet("CABINET", rows: AuditRow(17, formulaMask: 1u << (colL - 1)));
+            SwpSheetIndex target = Sheet("CABINET", rows: AuditRow(17, formulaMask: 0));
+            baseSheet.DdeTable = "DB_CABINETS_DIAG";
+            target.DdeTable = "DB_CABINETS_DIAG";
+
+            var quiet = new List<SwpLogEntry>();
+            SwpFormulaCheck.AuditAgainstBase(Index(target), Index(baseSheet), quiet);
+            Assert.DoesNotContain(quiet, l => l.Message.Contains("formula was lost"));
+
+            // Any OTHER table still reports it — the exemption is about cabinets, not about L.
+            SwpSheetIndex otherBase = Sheet("CHUTE", rows: AuditRow(17, formulaMask: 1u << (colL - 1)));
+            SwpSheetIndex other = Sheet("CHUTE", rows: AuditRow(17, formulaMask: 0));
+            otherBase.DdeTable = "DB_CHUTE";
+            other.DdeTable = "DB_CHUTE";
+
+            var loud = new List<SwpLogEntry>();
+            SwpFormulaCheck.AuditAgainstBase(Index(other), Index(otherBase), loud);
+            Assert.Contains(loud, l => l.Message.Contains("col L") && l.Message.Contains("formula was lost"));
+        }
+
+        [Fact]
+        public void A_cabinet_table_still_reports_every_other_lost_formula()
+        {
+            // The exemption is ONE column. Losing the Q formula on a cabinet is still damage.
+            SwpSheetIndex baseSheet = Sheet("CABINET", rows: AuditRow(17, formulaMask: 1u << 16));
+            SwpSheetIndex target = Sheet("CABINET", rows: AuditRow(17, formulaMask: 0));
+            baseSheet.DdeTable = "DB_CABINETS_DIAG";
+            target.DdeTable = "DB_CABINETS_DIAG";
+
+            var log = new List<SwpLogEntry>();
+            SwpFormulaCheck.AuditAgainstBase(Index(target), Index(baseSheet), log);
+            Assert.Contains(log, l => l.Message.Contains("col Q") && l.Message.Contains("formula was lost"));
+        }
+
+        [Fact]
+        public void A_block_header_reference_normalizes_to_its_own_block()
+        {
+            // The field case: CHUTE row 207 in the second block (header 181) against the reference
+            // file's single block (header 15). "F181" and "F15" both mean "my own header".
+            Assert.Equal(
+                SwpFormulaCheck.NormalizeExternal(
+                    "SUBSTITUTE([1]DB_CHUTE!$L$47,\"%1\",F181)", 207, 181),
+                SwpFormulaCheck.NormalizeExternal(
+                    "SUBSTITUTE([1]DB_CHUTE!$L$47,\"%1\",F15)", 41, 15));
+        }
+
+        [Fact]
+        public void A_reference_to_another_blocks_header_stays_a_difference()
+        {
+            // The botched-formula case: a dragged formula still points at the block above.
+            Assert.NotEqual(
+                SwpFormulaCheck.NormalizeExternal(
+                    "SUBSTITUTE([1]DB_CHUTE!$L$47,\"%1\",F15)", 207, 181),
+                SwpFormulaCheck.NormalizeExternal(
+                    "SUBSTITUTE([1]DB_CHUTE!$L$47,\"%1\",F15)", 41, 15));
+        }
+
+        [Fact]
+        public void The_rows_own_description_cells_still_normalize()
+        {
+            Assert.Equal(
+                SwpFormulaCheck.NormalizeExternal(
+                    "SUBSTITUTE([1]DB_X!$K$57&T207,\"%1\",F181)", 207, 181),
+                SwpFormulaCheck.NormalizeExternal(
+                    "SUBSTITUTE([1]DB_X!$K$57&T41,\"%1\",F15)", 41, 15));
+        }
+
+        [Fact]
+        public void An_external_target_row_is_never_mistaken_for_the_rows_own_number()
+        {
+            // Row 47 must NOT rewrite "$L$47" inside [1]DB_CHUTE!. The old substring replace did,
+            // which made a genuinely wrong external target compare EQUAL to the right one.
+            string wrongTarget = SwpFormulaCheck.NormalizeExternal(
+                "SUBSTITUTE([1]DB_CHUTE!$L$47,\"%1\",F15)", 47, 15);
+            string rightTarget = SwpFormulaCheck.NormalizeExternal(
+                "SUBSTITUTE([1]DB_CHUTE!$L$99,\"%1\",F15)", 47, 15);
+
+            Assert.Contains("L47", wrongTarget);
+            Assert.NotEqual(rightTarget, wrongTarget);
+        }
+
+        [Fact]
+        public void Row_one_does_not_mangle_the_workbook_id_or_the_placeholder()
+        {
+            string s = SwpFormulaCheck.NormalizeExternal(
+                "SUBSTITUTE([1]DB_CHUTE!$L$47,\"%1\",F15)", 1, 15);
+
+            Assert.Contains("[1]", s);
+            Assert.Contains("%1", s);
+        }
+
+        [Fact]
+        public void Quoted_text_is_data_not_a_cell_reference()
+        {
+            // "AL14" is an alarm label. On row 14 the old shape would have read it as a cell.
+            string s = SwpFormulaCheck.NormalizeExternal(
+                "SUBSTITUTE([1]DB_X!$K$57&\"AL14\",\"%1\",F15)", 14, 15);
+
+            Assert.Contains("AL14", s);
         }
 
         [Fact]

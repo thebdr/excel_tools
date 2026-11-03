@@ -125,7 +125,7 @@ namespace ExcelPowerTools.UI
 
             _headerSubtitle = new SmoothLabel
             {
-                Text = "Build a traceable revision history, correct uncertain alignment, then publish a validated Review.xlsx.",
+                Text = "Compare stored values, saved calculated values, and formulas across aligned revisions, then publish Review.xlsx.",
                 Location = new Point(17, 96),
                 Height = 53,
                 BackColor = Color.Transparent,
@@ -296,7 +296,7 @@ namespace ExcelPowerTools.UI
 
             AddStage("Setup", "Revision order, parent links, labels, baseline and master.", true);
             AddStage("Alignment", "Sheets, headers, data starts and key columns; uncertain cases require confirmation.", true);
-            AddStage("Review.xlsx", "Exact formula/value history, diagnostics and integrity-bound project state.", true);
+            AddStage("Review.xlsx", "History of stored values, saved calculated values, and formulas, with integrity-bound project state.", true);
             AddStage("Review decisions", "Accept, reject and annotate individual or grouped changes.", true);
             AddStage("Snapshots", "Neighboring-row evidence and expandable revision context.", false);
             AddStage("Merge", "Copy selected older-revision values into a new master revision with an audit log.", false);
@@ -320,7 +320,7 @@ namespace ExcelPowerTools.UI
                 "Review.xlsx is integrity-validated, copied to a protected launch location and opened read-only.");
             AddAlphaInfo(
                 "SAFETY",
-                "768 MiB aggregate input, 256 MiB per file, 2,000,000 stored cells and 10,000,000 bounded grid cells.");
+                "768 MiB aggregate input; 2M stored cells per revision / 10M audited; 2M retained useful-range cells; 10M bounded grid cells.");
             AddAlphaInfo(
                 "BEHAVIOR",
                 "Ambiguous identity blocks history and asks for correction; the engine never silently guesses.");

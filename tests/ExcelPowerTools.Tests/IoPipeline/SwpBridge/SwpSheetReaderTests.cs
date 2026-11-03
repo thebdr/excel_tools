@@ -65,7 +65,16 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             CellFormula = new CellFormula("$B$4&\".Alarm1\""),
         };
 
-        private static byte[] BuildWorkbook(bool withUncachedIdentity = false)
+        /// <summary>A formula whose cached result is an Excel error (a deleted row's reference).</summary>
+        private static Cell ErrorFormula(string reference, string formula, string error) => new Cell
+        {
+            CellReference = reference,
+            DataType = CellValues.Error,
+            CellFormula = new CellFormula(formula),
+            CellValue = new CellValue(error),
+        };
+
+        private static byte[] BuildWorkbook(bool withUncachedIdentity = false, bool withErrorIdentity = false)
         {
             using var stream = new MemoryStream();
             using (var document = SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook))
@@ -135,6 +144,19 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
                         Number("C183", 1),
                         Number("D183", 5)) { RowIndex = 183 },
                 };
+                if (withErrorIdentity)
+                {
+                    // Bit rows whose identity formulas cache an error: A is #REF! on row 20, and
+                    // row 21's D (the bit) is #N/A as plain text — the shape a "str" cell carries.
+                    rows.Insert(7, new Row(
+                        ErrorFormula("A20", "#REF!&\".Alarm1\"", "#REF!"),
+                        Number("C20", 0),
+                        Number("D20", 2)) { RowIndex = 20 });
+                    rows.Insert(8, new Row(
+                        Inline("A21", "DB_TEST_DIAG.Alarm1"),
+                        Number("C21", 0),
+                        StrFormula("D21", "VLOOKUP(1,X,1)", "#N/A")) { RowIndex = 21 });
+                }
 
                 var worksheetPart = workbook.AddNewPart<WorksheetPart>();
                 var sheetData = new SheetData();
@@ -257,6 +279,24 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
                 () => Read(BuildWorkbook(withUncachedIdentity: true)));
             Assert.Contains("Excel", ex.Message);
             Assert.Contains("row 19", ex.Message);
+        }
+
+        [Fact]
+        public void An_error_valued_identity_cell_is_skipped_with_a_warning()
+        {
+            // A cached #REF! in column A (a deleted row's formula) used to drop the row from
+            // RowsByKey silently: no update — the FLD included — could ever reach it.
+            var log = new List<SwpLogEntry>();
+            SwpSheetIndex sheet = Read(BuildWorkbook(withErrorIdentity: true), log).Sheets["CABINET"];
+
+            Assert.DoesNotContain(sheet.BitRows, r => r.RowNumber == 20);
+            Assert.DoesNotContain(sheet.BitRows, r => r.RowNumber == 21);
+            Assert.Equal(new[] { 17, 18, 19, 183 }, sheet.BitRows.Select(r => r.RowNumber).ToArray());
+            Assert.Contains(log, l => l.Severity == SwpLogSeverity.Warning &&
+                l.Message.Contains("row 20") && l.Message.Contains("(A) is #REF!") &&
+                l.Message.Contains("cannot be matched"));
+            Assert.Contains(log, l => l.Severity == SwpLogSeverity.Warning &&
+                l.Message.Contains("row 21") && l.Message.Contains("(D) is #N/A"));
         }
 
         [Fact]

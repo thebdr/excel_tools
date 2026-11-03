@@ -338,6 +338,144 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             catch { return false; }
         }
 
+        // ---- _Mnemonics ---------------------------------------------------------------------
+
+        internal const int MnemonicsHeaderRow = 6;
+        private const int MnemonicsColumnCount = 15;
+
+        /// <summary>
+        /// The mnemonic map as a sheet: what every mnemonic IS, where it lands, which producers
+        /// run, and the template sets. Edits persist for ALL systems and sessions, exactly like
+        /// _Offsets — the table is per-user configuration, not per-project data.
+        ///
+        /// Rendered from the SAME text the file export writes, so what is on screen, what is in
+        /// the registry and what a colleague receives are one artifact in three places.
+        /// </summary>
+        public static void RenderMnemonics(dynamic workbook)
+        {
+            dynamic sheet = EnsureSheet(workbook, SwpBridgeWorkspace.MnemonicsSheetName);
+            sheet.Cells.Clear();
+
+            sheet.Cells(1, 1).Value =
+                "The mnemonic map — what a mnemonic IS and where it lands · edits persist for ALL " +
+                "systems and sessions · double-click the Set cell of any row to export this table";
+            sheet.Cells(1, 1).Font.Bold = true;
+            sheet.Cells(2, 1).Value =
+                "Kind: map = a regex claims the mnemonic · generate:Name = a producer CREATES " +
+                "mnemonics (the name must exist in CustomMnemonicsManager, or the build says so) · " +
+                "Set names a TEMPLATE set — rows one thing spawns many of, each a full rule that " +
+                "may itself call generate:Name";
+            sheet.Cells(3, 1).Value =
+                "Match: a .NET regex with named groups · Sheet/Tag: templates ({firstLineId+line-1:00}) " +
+                "· Word: auto (needs (?<aw>AL|WR)) or Alarm/Warning/State/Alarm2 · Index/Bit: {group}, " +
+                "a number, or map(Source,{group}) · Params: key=value;key=value";
+            sheet.Cells(4, 1).Value =
+                "A blank Sheet means RECOGNIZED AND DELIBERATELY UNWRITTEN. First enabled match " +
+                "wins, so put the specific shape above the general one. A row that does not parse " +
+                "is inert and says why in _Log — it never fails the build.";
+
+            string[] headers = SwpMnemonicMap.Header.Split('\t');
+            var headerCells = new object[1, MnemonicsColumnCount];
+            for (int c = 0; c < MnemonicsColumnCount && c < headers.Length; c++) headerCells[0, c] = headers[c];
+            dynamic headerRange = sheet.Range(
+                sheet.Cells(MnemonicsHeaderRow, 1), sheet.Cells(MnemonicsHeaderRow, MnemonicsColumnCount));
+            headerRange.NumberFormat = "@";
+            SwpBridgeSpineSheet.WriteBlock(sheet, MnemonicsHeaderRow, 1, headerCells);
+            headerRange.Interior.Color = HeaderBlue;
+            headerRange.Font.Bold = true;
+
+            List<SwpMnemonicRule> rules = SwpBridgeRegistry.GetMnemonicMap().Rules;
+            if (rules.Count > 0)
+            {
+                var data = new object[rules.Count, MnemonicsColumnCount];
+                for (int r = 0; r < rules.Count; r++)
+                {
+                    SwpMnemonicRule rule = rules[r];
+                    data[r, 0] = rule.Set;
+                    data[r, 1] = rule.PlantType.ToString();
+                    data[r, 2] = rule.Order.ToString(CultureInfo.InvariantCulture);
+                    data[r, 3] = rule.Enabled ? "x" : "";
+                    data[r, 4] = rule.Kind == SwpRuleKind.Generate ? "generate:" + rule.Generator : "map";
+                    data[r, 5] = rule.ObjectKey;
+                    data[r, 6] = rule.Match;
+                    data[r, 7] = rule.Emit;
+                    data[r, 8] = rule.Sheet;
+                    data[r, 9] = rule.Tag;
+                    data[r, 10] = rule.Word;
+                    data[r, 11] = rule.Index;
+                    data[r, 12] = rule.Bit;
+                    data[r, 13] = rule.Params;
+                    data[r, 14] = rule.Note;
+                }
+                dynamic block = sheet.Range(sheet.Cells(MnemonicsHeaderRow + 1, 1),
+                    sheet.Cells(MnemonicsHeaderRow + rules.Count, MnemonicsColumnCount));
+                block.NumberFormat = "@";      // regexes and {templates} are TEXT, never formulas
+                SwpBridgeSpineSheet.WriteBlock(sheet, MnemonicsHeaderRow + 1, 1, data);
+
+                // A rule that did not compile is marked where the reader is already looking.
+                for (int r = 0; r < rules.Count; r++)
+                {
+                    if (rules[r].Error.Length == 0) continue;
+                    try
+                    {
+                        dynamic bad = sheet.Range(sheet.Cells(MnemonicsHeaderRow + 1 + r, 1),
+                            sheet.Cells(MnemonicsHeaderRow + 1 + r, MnemonicsColumnCount));
+                        bad.Interior.Color = ErrorRed;
+                    }
+                    catch { }
+                }
+
+                // The export gesture, on exactly one column — the Set cell, per the one-action rule.
+                try
+                {
+                    SwpBridgeSpineSheet.MarkDoubleClickable(sheet.Range(
+                        sheet.Cells(MnemonicsHeaderRow + 1, 1),
+                        sheet.Cells(MnemonicsHeaderRow + rules.Count, 1)));
+                }
+                catch { }
+            }
+
+            try
+            {
+                sheet.Range(sheet.Cells(MnemonicsHeaderRow, 1),
+                    sheet.Cells(MnemonicsHeaderRow + rules.Count, MnemonicsColumnCount)).Columns.AutoFit();
+            }
+            catch { }
+        }
+
+        /// <summary>Reads the sheet back into the GLOBAL registry table.</summary>
+        public static bool ParseMnemonics(dynamic sheet)
+        {
+            try
+            {
+                long lastRow = Math.Max(RangeHelpers.LastRow(sheet), MnemonicsHeaderRow);
+                var lines = new List<string> { SwpMnemonicMap.Header };
+                for (int r = MnemonicsHeaderRow + 1; r <= lastRow; r++)
+                {
+                    var cells = new string[MnemonicsColumnCount];
+                    bool any = false;
+                    for (int c = 0; c < MnemonicsColumnCount; c++)
+                    {
+                        cells[c] = CellText(sheet, r, c + 1);
+                        if (cells[c].Length > 0) any = true;
+                    }
+                    if (!any) continue;                       // a blank row is a spacer, not a rule
+                    lines.Add(string.Join("\t", cells));
+                }
+
+                // An empty table would claim no mnemonics at all — refuse rather than persist it.
+                SwpMnemonicMap map = SwpMnemonicMap.Parse(lines, null);
+                if (map == null || map.Rules.Count == 0) return false;
+                SwpBridgeRegistry.SetMnemonicMap(map);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>The table as the export writes it — the artifact for version control and for
+        /// sending to a colleague.</summary>
+        public static List<string> MnemonicExportLines() => SwpBridgeRegistry.GetMnemonicMap().ToLines();
+
         // ---- _Offsets -----------------------------------------------------------------------
 
         internal const int OffsetsHeaderRow = 4;
@@ -501,6 +639,43 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
         // ---- Home ---------------------------------------------------------------------------
 
+        /// <summary>Excel's own default row height, in points — one line of the standard font.</summary>
+        private const double StandardRowHeight = 15;
+
+        /// <summary>
+        /// Sizes a row of WRAPPED cells to the text it actually holds. A pinned number is wrong
+        /// the moment a sentence is added — the four-step strip was pinned at 112 and started
+        /// cropping when the override paragraph grew — and clearing the pin is not enough on its
+        /// own: an explicit height set by a PREVIOUS render survives Cells.Clear, so a rebuild
+        /// into the same workbook would keep the stale one. AutoFit is asked for explicitly.
+        ///
+        /// The floor is the safety net for the states where AutoFit silently declines to measure:
+        /// coming back at one standard line while the cells hold paragraphs means it did not run,
+        /// and a too-tall row is a far cheaper mistake than a cropped one. Its ~1 character per
+        /// width unit is deliberately pessimistic — measured against the real strip, Excel fits
+        /// about 40 characters in a 38-wide column, so the floor only ever over-estimates.
+        /// </summary>
+        private static void AutoFitWrappedRow(dynamic sheet, int row, string[] texts)
+        {
+            try
+            {
+                sheet.Rows(row).AutoFit();
+                double measured = (double)sheet.Rows(row).RowHeight;
+                if (measured > StandardRowHeight * 1.5) return;
+
+                double floor = StandardRowHeight;
+                for (int i = 0; i < texts.Length; i++)
+                {
+                    double width = (double)sheet.Columns(i + 1).ColumnWidth;
+                    if (width < 1 || string.IsNullOrEmpty(texts[i])) continue;
+                    double lines = Math.Ceiling(texts[i].Length / width);
+                    floor = Math.Max(floor, lines * StandardRowHeight);
+                }
+                if (floor > measured) sheet.Rows(row).RowHeight = floor;
+            }
+            catch { }
+        }
+
         private static readonly int HomePendingYellow = Rgb(255, 235, 156);
         private static readonly int HomeConflictRed = Rgb(255, 199, 206);
         private static readonly int HomeExternalBlue = Rgb(221, 235, 247);
@@ -534,7 +709,10 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             SwpBridgeSettings s = session.Settings;
             Put(sheet, 1, 1, "SWP Bridge", true);
             sheet.Cells(1, 1).Font.Size = 16;
-            Put(sheet, 2, 1, s.SwpFileName + " · " + s.PlantType + " · version " + s.CurrentVersionFolder + " · " +
+            // The session FILE comes first: with named sessions, which one is running is the first
+            // thing to know before trusting anything else on this sheet.
+            Put(sheet, 2, 1, "session " + System.IO.Path.GetFileName(session.EffectiveSidecarPath) + " · " +
+                s.SwpFileName + " · " + s.PlantType + " · version " + s.CurrentVersionFolder + " · " +
                 (s.ApplyToVersionFolder ? "apply creates a NEW dated version folder" : "apply writes IN PLACE (with .bak)"));
 
             // Buttons lay out in fixed pixel slots from the left margin — anchoring them to
@@ -566,7 +744,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 "ONE row's identity lands, and the description column ([Keep CONFIG text] / [Write IO text]) " +
                 "flips whether the bridge's composed text is added on top of CONFIG_PLANT's. " +
                 "_Glossary Use ☑/☐ and _Dictionary edits take effect on Refresh.",
-                "_Queue lists every pending write and formula repair — double-click Include to keep one out. " +
+                "_Queue lists every pending write and formula repair — double-click Include to keep one out " +
+                "(a device blank toggles together with the label writes it depends on — Group FLD). " +
                 "Apply patches the SWP headlessly: three-way checked, verified before written, atomic with .bak; " +
                 "then the workspace rebuilds to show the new reality.",
             };
@@ -583,7 +762,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 cell.WrapText = true;
                 cell.VerticalAlignment = XlTop;
             }
-            try { sheet.Rows(row).RowHeight = 112; } catch { }
+            AutoFitWrappedRow(sheet, row, bodies);
             row += 2;
 
             // ---- legend with the real swatches ----
@@ -640,7 +819,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 (SwpBridgeWorkspace.SpineSheetName, "SWP row", "opens the SWP at that row"),
                 (SwpBridgeWorkspace.SpineSheetName, "T.S. ref (now · new)", "opens the " + SwpBridgeWorkspace.TsRefSheetName + " card lookup"),
                 (SwpBridgeWorkspace.SpineSheetName, "Plant_Inputs · Busfield · Alarm strings · BUS ext. diag", "opens that document at the matched line (.csv in Excel, .txt in Notepad++)"),
-                (SwpBridgeWorkspace.QueueSheetName, "Include", "toggles ☑/☐ — ☐ keeps the write out of Apply"),
+                (SwpBridgeWorkspace.QueueSheetName, "Include", "toggles ☑/☐ — ☐ keeps the write out of Apply; a Group FLD row flips its whole group"),
                 (SwpBridgeWorkspace.GlossarySheetName, "Use", "toggles ☑/☐ — ☐ disables the pair for this system"),
                 (SwpBridgeWorkspace.PreviewSheetName, "first row", "toggles \"show full block\" / pending rows only"),
                 (SwpBridgeWorkspace.PreviewSheetName, "SWP row", "opens the SWP at that row"),

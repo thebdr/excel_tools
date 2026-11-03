@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using ExcelPowerTools.Core.IoPipeline.IoBridge;
 using ExcelPowerTools.Interop;
 using CoreIoListLogic = ExcelPowerTools.Core.IoPipeline.IoListLogic;
+using CsvSignalType = ExcelPowerTools.Core.IoPipeline.CsvSignalType;
 
 namespace ExcelPowerTools.IoPipeline.IoBridge
 {
@@ -91,7 +92,12 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             IoBridgeQueueSheet.Refresh(session);
         }
 
-        /// <summary>Distinct model rows behind the current selection, in worksheet order (capped).</summary>
+        /// <summary>
+        /// Distinct model rows behind the current selection, in worksheet order (capped) — VISIBLE
+        /// rows only. A selection drawn over a filtered sheet spans the hidden rows too, and an
+        /// action the user aimed at the rows they can see must never land on the ones the filter
+        /// took away (field report 2026-11-03).
+        /// </summary>
         private static List<BridgeRow> SelectedModelRows(dynamic app, BridgeSheetMap map)
         {
             const int MaxRows = 5000;
@@ -99,6 +105,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             var rows = new List<BridgeRow>();
             try
             {
+                dynamic sheet = app.ActiveSheet;
                 dynamic areas = app.Selection.Areas;
                 int areaCount = (int)areas.Count;
                 for (int a = 1; a <= areaCount; a++)
@@ -107,8 +114,11 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     int first = (int)area.Row;
                     int count = (int)area.Rows.Count;
                     for (int r = first; r < first + count && seen.Count <= MaxRows; r++)
-                        if (seen.Add(r) && map.RowByWorksheetRow.TryGetValue(r, out BridgeRow row))
-                            rows.Add(row);
+                    {
+                        if (!seen.Add(r) || !map.RowByWorksheetRow.TryGetValue(r, out BridgeRow row)) continue;
+                        if (IsRowHidden(sheet, r)) continue;
+                        rows.Add(row);
+                    }
                 }
             }
             catch
@@ -211,8 +221,8 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                 if (row.Kind == BridgeRowKind.CsvOnly || row.Csv == null) continue;
                 bool singleCsv = !row.Csv.IsMulti;
                 if (!TryLinkedValues(session, map, row, pair, out LinkedValues values)) continue;
-                if (singleCsv && values.CsvNew != values.CsvOld) csvSide.Add(values);
-                if (values.IoNew != values.IoOld) ioSide.Add(values);
+                if (singleCsv && values.CsvNew != values.CsvOld && CsvAlignAllowed(row, pair)) csvSide.Add(values);
+                if (values.IoNew != values.IoOld && IoAlignAllowed(row, pair)) ioSide.Add(values);
             }
 
             if (csvSide.Count > 0)
@@ -361,13 +371,13 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             (string csvKey, string ioKey) = KeysFor(pair);
             if (TryLinkedValues(session, map, row, pair, out LinkedValues values))
             {
-                if (!ioSideOnly && values.CsvNew != values.CsvOld)
+                if (!ioSideOnly && values.CsvNew != values.CsvOld && CsvAlignAllowed(row, pair))
                     choices.Add(new Choice
                     {
                         Label = csvKey + " — Update " + label + " on CSV  (\"" + Shorten(values.CsvOld) + "\" → \"" + Shorten(values.CsvNew) + "\")",
                         Perform = () => values.QueueCsv(),
                     });
-                if (values.IoNew != values.IoOld)
+                if (values.IoNew != values.IoOld && IoAlignAllowed(row, pair))
                     choices.Add(new Choice
                     {
                         Label = ioKey + " — Update " + label + " on IO list  (\"" + Shorten(values.IoOld) + "\" → \"" + Shorten(values.IoNew) + "\")",
@@ -375,6 +385,19 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     });
             }
         }
+
+        /// <summary>
+        /// Aligning a MOVED row's address (the CSV record carries the IO row's name at another
+        /// address) is refused on the side where the destination address is already taken — moving
+        /// there would collide with another record (CSV side) or duplicate another row's address
+        /// (IO-list side), as in a swapped pair or a shifted block. The other side stays offered.
+        /// </summary>
+        private static bool CsvAlignAllowed(BridgeRow row, LinkedField pair) =>
+            pair != LinkedField.Address || row.Csv == null || !row.Csv.Moved || !row.Csv.IoAddressOccupiedInCsv;
+
+        private static bool IoAlignAllowed(BridgeRow row, LinkedField pair) =>
+            pair != LinkedField.Address || row.Csv == null || !row.Csv.Moved ||
+            (!row.Csv.CsvAddressOccupiedInIo && !row.Csv.OtherCard);   // an IO address cannot name another card
 
         private sealed class LinkedValues
         {
@@ -442,6 +465,15 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                         '\0', csvNode.Trim(), csvOff.Trim(), csvBit.Trim());
                     string ioComposite = CoreIoListLogic.BuildAddress('\0', n, o, b);
 
+                    // An off-card moved row also differs by CARD: the composites carry it, so the CSV
+                    // side is offered even when node/offset/bit agree.
+                    bool offCard = row.Csv != null && row.Csv.Moved && row.Csv.OtherCard;
+                    if (offCard)
+                    {
+                        csvComposite += " (card " + row.Csv.CsvCard + ")";
+                        ioComposite += " (card " + map.Model.Card + ")";
+                    }
+
                     var result = new LinkedValues
                     {
                         CsvOld = csvComposite,
@@ -451,9 +483,11 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                     };
                     result.QueueCsv = () =>
                     {
-                        QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Node, csvNode, n);
-                        QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Offset, csvOff, o);
-                        QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Bit, csvBit, b);
+                        // Only the parts that differ — a moved record usually changes just the offset.
+                        if (Norm(csvNode) != Norm(n)) QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Node, csvNode, n);
+                        if (Norm(csvOff) != Norm(o)) QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Offset, csvOff, o);
+                        if (Norm(csvBit) != Norm(b)) QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Bit, csvBit, b);
+                        if (offCard) QueueCsvSet(session, row, LinkedField.Address, CsvCanonical.Card, row.CsvValues[CsvCanonical.Card], map.Model.Card);
                         AutoQueueDescription(session, map, row);
                     };
                     result.QueueIo = () =>
@@ -602,31 +636,16 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
         }
 
         /// <summary>
-        /// The CSV Type is not derivable from the IO list — one picker, shared by all callers.
-        /// Taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI · 8 DEO · 9 VAI · 10 VAO · 11 BUS.
+        /// The CSV Type is not derivable from the IO list — one picker, shared by all callers,
+        /// listing the controller's own taxonomy (<see cref="CsvSignalType"/>) for the direction.
         /// </summary>
         internal static string PromptCsvType(bool isInput, string subject, string caption = "Integrate into CSV")
         {
-            string[] typeOptions = isInput
-                ? new[]
-                {
-                    "1 — DI (digital input)",
-                    "3 — AI (analog input)",
-                    "5 — VDI (virtual digital input)",
-                    "7 — DEI (data exchange in)",
-                    "9 — VAI (virtual analog input)",
-                    "11 — BUS (remote node state)",
-                }
-                : new[]
-                {
-                    "2 — DO (digital output)",
-                    "4 — AO (analog output)",
-                    "6 — VDO (virtual digital output)",
-                    "8 — DEO (data exchange out)",
-                    "10 — VAO (virtual analog output)",
-                };
+            List<CsvSignalType.Entry> entries = CsvSignalType.ForDirection(isInput);
+            var typeOptions = new string[entries.Count];
+            for (int i = 0; i < entries.Count; i++) typeOptions[i] = CsvSignalType.Label(entries[i]);
             int pick = Dialogs.SelectOne("CSV Type for " + subject + ":", typeOptions, caption);
-            return pick < 0 ? null : typeOptions[pick].Split(' ')[0];
+            return pick < 0 ? null : entries[pick].Number.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
         /// <summary>
@@ -743,6 +762,15 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             return -1;
         }
 
+
+        private static string Norm(string value) => CoreIoListLogic.Norm(value);
+
+        /// <summary>Hidden by an AutoFilter, a manual hide or an outline collapse — all are "not shown".</summary>
+        private static bool IsRowHidden(dynamic sheet, int row)
+        {
+            try { return (bool)sheet.Rows(row).Hidden; }
+            catch { return false; }   // unreadable → treat as visible rather than silently drop it
+        }
 
         private static string Shorten(string value) =>
             value == null ? "" : value.Length <= 24 ? value : value.Substring(0, 24) + "…";

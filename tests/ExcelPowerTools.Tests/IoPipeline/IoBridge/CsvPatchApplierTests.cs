@@ -34,22 +34,106 @@ namespace ExcelPowerTools.Tests.IoPipeline.IoBridge
             };
 
         private static CsvPatchResult Apply(CsvDocument doc, params BridgeAction[] actions) =>
-            CsvPatchApplier.Apply(doc, actions, CsvColumnsMap.Locate(doc)!);
+            CsvPatchApplier.Apply(doc, actions, CsvColumnsMap.Locate(doc, PlantCsvKind.Inputs)!);
 
         [Fact]
         public void Map_locates_both_export_schemas()
         {
-            CsvColumnsMap inputs = CsvColumnsMap.Locate(Load())!;
+            CsvColumnsMap inputs = CsvColumnsMap.Locate(Load(), PlantCsvKind.Inputs)!;
             Assert.Equal(1, inputs.Name);
             Assert.Equal(15, inputs.Board);
             Assert.Equal(16, inputs.FieldFor("description"));
+            Assert.False(inputs.LocatedByPosition);
 
             var outputs = CsvColumnsMap.Locate(CsvFile.Load(Encoding.UTF8.GetBytes(
                 "#;Output Name;Output Type;NC/NO Logic;Node;Offset;Bit;Default Value (For Virtual I/Os);Board number;Description\r\n" +
-                "@;DOOR_CMD_01;2;0;235;10;1;0;1;DOOR CMD\r\n")))!;
+                "@;DOOR_CMD_01;2;0;235;10;1;0;1;DOOR CMD\r\n")), PlantCsvKind.Outputs)!;
             Assert.Equal(1, outputs.Name);
             Assert.Equal(8, outputs.Board);
             Assert.Equal(3, outputs.FieldFor("ncnologic"));
+        }
+
+        [Fact]
+        public void The_real_ispc_outputs_shape_locates_despite_the_trailing_marker_column()
+        {
+            // The FVZ ISPC export: the header line has 10 fields, every data row 11 (a trailing
+            // ";#;" marker column). The old modal-width header detector skipped the header row as
+            // ragged and refused the whole file — the header NAMES were never the problem.
+            var map = CsvColumnsMap.Locate(CsvFile.Load(Encoding.UTF8.GetBytes(
+                "#;Output Name;Output Type;NC/NO Logic;Node;Offset;Bit;Default Value (For Virtual I/Os);Board number;Description\r\n" +
+                "@;LINE_HEARTBIT_011;2;0;240;0;0;0;1;#;\r\n" +
+                "@;LINE_RESET_011;2;0;240;0;1;0;1;#;\r\n")), PlantCsvKind.Outputs);
+
+            Assert.NotNull(map);
+            Assert.False(map!.LocatedByPosition);
+            Assert.Equal(0, map.HeaderIndex);
+            Assert.Equal(1, map.Name);
+            Assert.Equal(4, map.Node);
+            Assert.Equal(5, map.Offset);
+            Assert.Equal(6, map.Bit);
+            Assert.Equal(8, map.Board);
+            Assert.Equal(9, map.FieldFor("description"));
+        }
+
+        [Fact]
+        public void A_header_naming_nothing_falls_back_to_the_fixed_positions()
+        {
+            // The 2026-08-24 ruling: header content must never block a load — the export tool's
+            // column layout is the contract. Junk names, real signal data → positional map.
+            var outputs = CsvColumnsMap.Locate(CsvFile.Load(Encoding.UTF8.GetBytes(
+                "#;A;B;C;D;E;F;G;H;I\r\n" +
+                "@;DOOR_CMD_01;2;0;235;10;1;0;1;X\r\n" +
+                "@;SIREN_02;2;0;235;10;2;0;1;X\r\n")), PlantCsvKind.Outputs);
+            Assert.NotNull(outputs);
+            Assert.True(outputs!.LocatedByPosition);
+            Assert.Equal(0, outputs.HeaderIndex);
+            Assert.Equal(1, outputs.Name);
+            Assert.Equal(4, outputs.Node);
+            Assert.Equal(5, outputs.Offset);
+            Assert.Equal(6, outputs.Bit);
+            Assert.Equal(8, outputs.Board);
+
+            var inputs = CsvColumnsMap.Locate(CsvFile.Load(Encoding.UTF8.GetBytes(
+                "#;A;B;C;D;E;F;G;H;I;J;K;L;M;N;O;P\r\n" +
+                "@;LP100301;1;0;0;0;0;0;0;0;0;90;0;1;0;1;LAMP\r\n")), PlantCsvKind.Inputs);
+            Assert.NotNull(inputs);
+            Assert.True(inputs!.LocatedByPosition);
+            Assert.Equal(11, inputs.Node);
+            Assert.Equal(12, inputs.Offset);
+            Assert.Equal(13, inputs.Bit);
+            Assert.Equal(15, inputs.Board);
+        }
+
+        [Fact]
+        public void A_foreign_numeric_csv_is_still_refused()
+        {
+            // BusField.csv is marker-shaped and numeric-heavy, but its name position holds a
+            // number — the positional fallback must not swallow a wrong file pick.
+            CsvDocument busfield = CsvFile.Load(Encoding.UTF8.GetBytes(
+                "#;Board Number;Phisical Node Address;Node Type;1 = Warning on fault;a;b;c;Reference Index;DB Class ID;Element;Bit;#;TEXT\r\n" +
+                "@;1;236;32880;0;0;0;0;0;60;1;61;#;Controller\r\n" +
+                "@;1;237;32880;0;0;0;0;0;60;1;62;#;Controller\r\n"));
+
+            Assert.Null(CsvColumnsMap.Locate(busfield, PlantCsvKind.Outputs));
+            Assert.Null(CsvColumnsMap.Locate(busfield, PlantCsvKind.Inputs));
+        }
+
+        // The real FVZ ISPC file, when this machine has it — the file the refusal was reported on.
+        private const string RealIspcOutputsPath =
+            @"C:\Users\bogdan.dragoi\OneDrive - FIVES\Work\0 Commesse\FVZ_Intermarche\3 Software" +
+            @"\9_Backup\20260820_1715\FVZ_ISPC1_20260820_1715\PRODUCTION\ISPC\db_csv\Plant_Outputs.csv";
+
+        [Fact]
+        public void Real_ispc_plant_outputs_locates_by_name()
+        {
+            if (!System.IO.File.Exists(RealIspcOutputsPath)) return;
+
+            var map = CsvColumnsMap.Locate(
+                CsvFile.Load(System.IO.File.ReadAllBytes(RealIspcOutputsPath)), PlantCsvKind.Outputs);
+            Assert.NotNull(map);
+            Assert.False(map!.LocatedByPosition);
+            Assert.Equal(1, map.Name);
+            Assert.Equal(8, map.Board);
         }
 
         [Fact]
@@ -289,7 +373,7 @@ namespace ExcelPowerTools.Tests.IoPipeline.IoBridge
                     OldValue = "DOOR_CMD_01",
                     NewValue = "DOOR_CMD_01B",
                 },
-            }, CsvColumnsMap.Locate(doc)!);
+            }, CsvColumnsMap.Locate(doc, PlantCsvKind.Outputs)!);
 
             Assert.Equal(BridgeActionStatus.Applied, result.Outcomes.Single().Outcome);
             byte[] outBytes = doc.Save();

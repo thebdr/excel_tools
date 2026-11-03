@@ -149,7 +149,7 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
-        public void Duplicate_row_occurrences_remain_one_explicit_many_to_many_ambiguity()
+        public void Repeated_identical_rows_align_monotonically_with_only_surplus_after()
         {
             AlignmentTable before = Table(
                 new[] { "A" },
@@ -165,12 +165,73 @@ namespace ExcelPowerTools.Tests.Comparison
 
             AxisAlignmentResult result = TabularAlignmentEngine.AlignRows(before, after);
 
+            Assert.Empty(result.Ambiguities);
+            AssertMapped(result, 0, 0);
+            AssertMapped(result, 1, 1);
+            AssertMapped(result, 2, 2);
+            AssertMapped(result, 3, 4);
+            AxisAlignmentLink surplus = Assert.Single(
+                result.Links,
+                link => link.Kind == AxisAlignmentKind.OnlyAfter);
+            Assert.Equal(3, surplus.AfterIndex);
+            Assert.DoesNotContain(result.Links, link => link.Kind == AxisAlignmentKind.OnlyBefore);
+        }
+
+        [Fact]
+        public void Repeated_identical_rows_align_monotonically_with_only_surplus_before()
+        {
+            AlignmentTable before = Table(
+                new[] { "A" },
+                new[] { "X" },
+                new[] { "X" },
+                new[] { "X" },
+                new[] { "B" });
+            AlignmentTable after = Table(
+                new[] { "A" },
+                new[] { "X" },
+                new[] { "X" },
+                new[] { "B" });
+
+            AxisAlignmentResult result = TabularAlignmentEngine.AlignRows(before, after);
+
+            Assert.Empty(result.Ambiguities);
+            AssertMapped(result, 0, 0);
+            AssertMapped(result, 1, 1);
+            AssertMapped(result, 2, 2);
+            AssertMapped(result, 4, 3);
+            AxisAlignmentLink surplus = Assert.Single(
+                result.Links,
+                link => link.Kind == AxisAlignmentKind.OnlyBefore);
+            Assert.Equal(3, surplus.BeforeIndex);
+            Assert.DoesNotContain(result.Links, link => link.Kind == AxisAlignmentKind.OnlyAfter);
+        }
+
+        [Fact]
+        public void Reordered_repeated_row_group_crossing_a_unique_anchor_remains_ambiguous()
+        {
+            AlignmentTable before = Table(
+                new[] { "A" },
+                new[] { "X" },
+                new[] { "X" },
+                new[] { "Y" },
+                new[] { "B" });
+            AlignmentTable after = Table(
+                new[] { "A" },
+                new[] { "Y" },
+                new[] { "X" },
+                new[] { "X" },
+                new[] { "B" });
+
+            AxisAlignmentResult result = TabularAlignmentEngine.AlignRows(before, after);
+
             AxisAlignmentAmbiguity ambiguity = Assert.Single(result.Ambiguities);
             Assert.Equal(new[] { 1, 2 }, ambiguity.BeforeIndices);
-            Assert.Equal(new[] { 1, 2, 3 }, ambiguity.AfterIndices);
+            Assert.Equal(new[] { 2, 3 }, ambiguity.AfterIndices);
             Assert.DoesNotContain(result.Links,
                 link => link.BeforeIndex == 1 || link.BeforeIndex == 2 ||
-                        link.AfterIndex == 1 || link.AfterIndex == 2 || link.AfterIndex == 3);
+                        link.AfterIndex == 2 || link.AfterIndex == 3);
+            AssertMapped(result, 0, 0);
+            AssertMapped(result, 4, 4);
         }
 
         [Fact]
@@ -235,14 +296,101 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
-        public void Blank_header_cells_are_left_unmapped_even_when_their_physical_positions_match()
+        public void Blank_header_column_with_unique_neighbors_and_ninety_percent_similarity_aligns()
         {
             AlignmentTable before = Table(
-                new[] { "ID", "" },
-                new[] { "A", "before" });
+                new[] { "ID", "", "Amount" },
+                new[] { "A", "one", "1" },
+                new[] { "B", "two", "2" },
+                new[] { "C", "three", "3" },
+                new[] { "D", "four", "4" },
+                new[] { "E", "five", "5" },
+                new[] { "F", "six", "6" },
+                new[] { "G", "seven", "7" },
+                new[] { "H", "eight", "8" },
+                new[] { "I", "nine", "9" },
+                new[] { "J", "ten", "10" });
             AlignmentTable after = Table(
-                new[] { "ID", "" },
-                new[] { "A", "after" });
+                new[] { "ID", "", "Amount" },
+                new[] { "A", "one", "1" },
+                new[] { "B", "two", "2" },
+                new[] { "C", "three", "3" },
+                new[] { "D", "four", "4" },
+                new[] { "E", "five", "5" },
+                new[] { "F", "six", "6" },
+                new[] { "G", "seven", "7" },
+                new[] { "H", "eight", "8" },
+                new[] { "I", "nine", "9" },
+                new[] { "J", "changed", "10" });
+
+            AxisAlignmentResult result = TabularAlignmentEngine.AlignColumns(
+                before,
+                after,
+                ConfirmedHeader(before),
+                ConfirmedHeader(after));
+
+            Assert.Empty(result.Ambiguities);
+            AssertMapped(result, 0, 0);
+            AssertMapped(result, 1, 1);
+            AssertMapped(result, 2, 2);
+        }
+
+        [Fact]
+        public void Competing_blank_header_targets_fail_closed_as_unmatched()
+        {
+            AlignmentTable before = Table(
+                new[] { "ID", "", "Amount" },
+                new[] { "A", "one", "1" },
+                new[] { "B", "two", "2" },
+                new[] { "C", "three", "3" },
+                new[] { "D", "four", "4" },
+                new[] { "E", "five", "5" },
+                new[] { "F", "six", "6" },
+                new[] { "G", "seven", "7" },
+                new[] { "H", "eight", "8" },
+                new[] { "I", "nine", "9" },
+                new[] { "J", "ten", "10" });
+            AlignmentTable after = Table(
+                new[] { "ID", "", "", "Amount" },
+                new[] { "A", "one", "one", "1" },
+                new[] { "B", "two", "two", "2" },
+                new[] { "C", "three", "three", "3" },
+                new[] { "D", "four", "four", "4" },
+                new[] { "E", "five", "five", "5" },
+                new[] { "F", "six", "six", "6" },
+                new[] { "G", "seven", "seven", "7" },
+                new[] { "H", "eight", "eight", "8" },
+                new[] { "I", "changed-left", "nine", "9" },
+                new[] { "J", "ten", "changed-right", "10" });
+
+            AxisAlignmentResult result = TabularAlignmentEngine.AlignColumns(
+                before,
+                after,
+                ConfirmedHeader(before),
+                ConfirmedHeader(after));
+
+            Assert.Empty(result.Ambiguities);
+            AssertMapped(result, 0, 0);
+            AssertMapped(result, 2, 3);
+            Assert.DoesNotContain(result.Links,
+                link => link.Kind == AxisAlignmentKind.Matched && link.BeforeIndex == 1);
+            Assert.Contains(result.Links,
+                link => link.Kind == AxisAlignmentKind.OnlyBefore && link.BeforeIndex == 1);
+            Assert.Contains(result.Links,
+                link => link.Kind == AxisAlignmentKind.OnlyAfter && link.AfterIndex == 1);
+            Assert.Contains(result.Links,
+                link => link.Kind == AxisAlignmentKind.OnlyAfter && link.AfterIndex == 2);
+        }
+
+        [Fact]
+        public void Blank_header_column_with_low_similarity_remains_unmapped()
+        {
+            AlignmentTable before = Table(
+                new[] { "ID", "", "Amount" },
+                new[] { "A", "before", "1" });
+            AlignmentTable after = Table(
+                new[] { "ID", "", "Amount" },
+                new[] { "A", "after", "1" });
 
             AxisAlignmentResult result = TabularAlignmentEngine.AlignColumns(
                 before,
@@ -251,6 +399,7 @@ namespace ExcelPowerTools.Tests.Comparison
                 ConfirmedHeader(after));
 
             AssertMapped(result, 0, 0);
+            AssertMapped(result, 2, 2);
             Assert.DoesNotContain(result.Links,
                 link => link.Kind == AxisAlignmentKind.Matched && link.BeforeIndex == 1);
             Assert.Contains(result.Links,

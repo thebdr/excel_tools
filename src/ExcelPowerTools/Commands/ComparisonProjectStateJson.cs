@@ -76,7 +76,7 @@ namespace ExcelPowerTools.Commands
                 "Ambiguous sheet, row, or column identity blocks history instead of guessing",
                 "User-facing review decisions, snapshots, dependency expansion, merge, archive export, and XLSB extraction are not implemented",
                 "The embedded Phase 2 state preserves exact changed-subject history but not complete source package bytes",
-                "Current in-process safety limits are 768 MiB of inputs, 2,000,000 stored cells, and 10,000,000 bounded grid cells per project",
+                "Current in-process safety limits are 768 MiB of inputs; 2,000,000 physically stored cells per revision and 10,000,000 audited per project; 2,000,000 retained useful-range cells; and 10,000,000 bounded grid cells",
             };
             AppendStringArrayValues(json, limitations);
             json.Append(']');

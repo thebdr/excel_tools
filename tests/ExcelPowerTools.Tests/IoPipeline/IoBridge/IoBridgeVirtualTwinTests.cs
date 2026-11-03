@@ -119,7 +119,7 @@ namespace ExcelPowerTools.Tests.IoPipeline.IoBridge
             string inputs = Header +
                 "@,FIRE_ALARM_STOP_REQUEST,5,0,0,0,0,0,0,0,0,0,0,0,0,1,FIRE ALARM STOP REQUEST\r\n";
             CsvDocument doc = CsvFile.Load(Encoding.UTF8.GetBytes(inputs));
-            CsvColumnsMap map = CsvColumnsMap.Locate(doc);
+            CsvColumnsMap map = CsvColumnsMap.Locate(doc, PlantCsvKind.Inputs);
 
             // The action carries the IO point's identity (its address) — the twin sits at 0.0.0.
             var action = new BridgeAction

@@ -101,7 +101,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
             AddRegexRow(layout, 5, "Compare virtuals", _virtualInclude,
-                "regex — VIRTUAL signals (types 5/6/9/10) whose mnemonic matches join by name, e.g. ^CLASSDIAGAL");
+                "regex — VIRTUAL signals (types 5/6/9/10/13/14) whose mnemonic matches join by name, e.g. ^CLASSDIAGAL");
             AddRegexRow(layout, 6, "Exclude mnemonics", _excludeMnemonics,
                 "regex — IO-list MNEMONICS that match drop out of the comparison (generator keys beside a real one, e.g. ^SAFETY_NUMDOORS); a cell whose every mnemonic matches is ignored whole");
 

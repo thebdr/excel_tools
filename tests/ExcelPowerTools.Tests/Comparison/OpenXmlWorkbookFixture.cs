@@ -21,6 +21,8 @@ namespace ExcelPowerTools.Tests.Comparison
             internal bool AddExternalRelationship { get; set; }
             internal bool OmitSheetData { get; set; }
             internal bool AddSecondSheetData { get; set; }
+            internal bool OmitSheetId { get; set; }
+            internal string? RawState { get; set; }
         }
 
         internal static byte[] Create(
@@ -101,10 +103,13 @@ namespace ExcelPowerTools.Tests.Comparison
                     var sheet = new Sheet
                     {
                         Name = definition.Name,
-                        SheetId = definition.SheetId,
                         Id = workbookPart.GetIdOfPart(worksheetPart),
                     };
-                    if (definition.State.HasValue) sheet.State = definition.State.Value;
+                    if (!definition.OmitSheetId) sheet.SheetId = definition.SheetId;
+                    if (definition.RawState != null)
+                        sheet.SetAttribute(new OpenXmlAttribute("state", "", definition.RawState));
+                    else if (definition.State.HasValue)
+                        sheet.State = definition.State.Value;
                     sheetCollection.Append(sheet);
                 }
 

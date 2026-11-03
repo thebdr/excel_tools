@@ -32,6 +32,12 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public string QueuedUtc = "";       // ISO-8601 "O", invariant
         public string AppliedUtc = "";
 
+        /// <summary>The FLD group this action belongs to ("" = none): a row's device blank with
+        /// the label writes it depends on (T/U, and the Q/R extension that displays them). The
+        /// members toggle together on the queue and apply together — a blank J next to an
+        /// un-appended label is the device existing nowhere.</summary>
+        public string FldGroup = "";
+
         public bool IsOpen =>
             Status == SwpActionStatus.Pending ||
             Status == SwpActionStatus.Conflict ||
@@ -51,6 +57,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public string Current = "";
         public string Proposed = "";
         public int RowNumber;              // SWP worksheet row, display/preview only
+        public string FldGroup = "";       // see SwpAction.FldGroup
 
         public string Key => Sheet + "|" + CoordinateKey + "|" + Field;
     }
@@ -66,23 +73,55 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     {
         public List<SwpAction> Actions = new List<SwpAction>();
 
+        /// <summary>
+        /// The actions Apply takes: included and pending — minus the members of a SPLIT FLD
+        /// group (another open member excluded, or stuck in conflict), which are held back so a
+        /// device blank never lands without its label (<see cref="HeldBack"/> lists them).
+        /// </summary>
         public List<SwpAction> IncludedPending()
         {
+            HashSet<string> split = SplitGroups();
             var result = new List<SwpAction>();
             foreach (SwpAction a in Actions)
-                if (a.Include && a.Status == SwpActionStatus.Pending) result.Add(a);
+                if (a.Include && a.Status == SwpActionStatus.Pending && !split.Contains(a.FldGroup))
+                    result.Add(a);
             return result;
         }
 
+        /// <summary>Included pending actions that Apply leaves out because their FLD group is split.</summary>
+        public List<SwpAction> HeldBack()
+        {
+            HashSet<string> split = SplitGroups();
+            var result = new List<SwpAction>();
+            foreach (SwpAction a in Actions)
+                if (a.Include && a.Status == SwpActionStatus.Pending && split.Contains(a.FldGroup))
+                    result.Add(a);
+            return result;
+        }
+
+        /// <summary>The FLD groups with an open member that is not (included AND pending).</summary>
+        private HashSet<string> SplitGroups()
+        {
+            var split = new HashSet<string>();
+            foreach (SwpAction a in Actions)
+                if (a.FldGroup.Length > 0 && a.IsOpen && !(a.Include && a.Status == SwpActionStatus.Pending))
+                    split.Add(a.FldGroup);
+            return split;
+        }
+
+        /// <summary>Sets one action's Include — and its whole FLD group's: the decision is one.</summary>
         public bool SetInclude(string actionId, bool include)
         {
+            SwpAction target = null;
             foreach (SwpAction a in Actions)
-            {
-                if (a.ActionId != actionId) continue;
-                a.Include = include;
-                return true;
-            }
-            return false;
+                if (a.ActionId == actionId) { target = a; break; }
+            if (target == null) return false;
+
+            target.Include = include;
+            if (target.FldGroup.Length > 0)
+                foreach (SwpAction a in Actions)
+                    if (a.IsOpen && a.FldGroup == target.FldGroup) a.Include = include;
+            return true;
         }
 
         /// <summary>Drops finished history (Applied / AppliedExternally). Returns how many went.</summary>
@@ -132,6 +171,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 if (editsByKey.TryGetValue(action.Key, out SwpProposedEdit edit))
                 {
                     covered.Add(action.Key);
+                    action.FldGroup = edit.FldGroup ?? "";   // the group follows the fresh diff
                     if (current == action.OldValue)
                     {
                         action.Status = SwpActionStatus.Pending;
@@ -174,6 +214,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     OldValue = edit.Current,
                     NewValue = edit.Proposed,
                     QueuedUtc = nowUtc ?? "",
+                    FldGroup = edit.FldGroup ?? "",
                 });
             }
         }

@@ -55,9 +55,15 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
                 if (session.Model.Sheets.Count == 0)
                     throw new InvalidOperationException("No selected sheet carries a Bit + Mnemonic header.");
                 if (session.Model.InputsMap == null)
-                    throw new InvalidOperationException("The Inputs CSV is not a plant CSV (Name/Node/Offset/Bit/Card columns).");
+                    throw new InvalidOperationException(
+                        "The Inputs CSV could not be read as a plant CSV: no header names anything " +
+                        "like Signal ID/Node/Offset/Bit/Card, and the legacy column positions " +
+                        "(2nd, 12th, 13th, 14th, 16th) hold no signal-shaped data either.");
                 if (session.Model.OutputsMap == null)
-                    throw new InvalidOperationException("The Outputs CSV is not a plant CSV (Name/Node/Offset/Bit/Card columns).");
+                    throw new InvalidOperationException(
+                        "The Outputs CSV could not be read as a plant CSV: no header names anything " +
+                        "like Output Name/Node/Offset/Bit/Board number, and the legacy column positions " +
+                        "(2nd, 5th, 6th, 7th, 9th) hold no signal-shaped data either.");
 
                 // Interior colors from the saved file bytes — the electrical dept's revision-tracking
                 // fills, read headlessly and KEPT on the session so un-queueing can restore them.

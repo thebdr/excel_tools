@@ -930,7 +930,7 @@ namespace ExcelPowerTools.UI
             return new List<ToolDefinition>
             {
                 ToolDefinition.Navigation("Compare", "Compare revisions",
-                    "Build a multi-revision project with editable lineage, aligned logical changes and a Review workbook.",
+                    "Compare stored values, saved calculated values, and formulas across aligned workbook revisions.",
                     "TREE", comparison, ShowComparisonWorkspace,
                     "spreadsheet workbook revisions differences history branch conflict formula value review xlsx xlsm",
                     "ALPHA", section: "Comparison"),

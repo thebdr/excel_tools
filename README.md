@@ -56,7 +56,7 @@ prompts before the workbook is allowed to close.
 The ribbon is intentionally limited to frequent, context-driven actions:
 
 - **Power Tools** — the docked Hub, Undo/Redo, and Timeline.
-- **Compare & review** — Compare revisions, Exact two-file preview, and validated Review workbook reopening.
+- **Compare & review** — aligned workbook revisions, keyed-table comparison/apply, Exact preview, and validated Review reopening.
 - **Delimited workspace** — Open data, Save file, Save all, and Index.
 - **Transform** — Keep values, Smart fill, Change field, and Regex replace.
 - **Clean & analyze** — natural sort, Deduplicate, and Column stats.
@@ -76,12 +76,28 @@ in Hub...** command and the Hub's **Open Review workbook** card both enter this 
 byte-for-byte unchanged, and the save rechecks its package hash, validated identities, and stable Windows file
 occurrence on the same protected handle used to derive the revision.
 
-**Compare revisions** is the multi-revision alpha, available as the ribbon's primary comparison action and in
-the Hub. Select 2–20 distinct `.xlsx`/`.xlsm` files, review and correct the inferred order and parent links,
+**Keyed table comparison...** is a secondary ribbon-menu action. It compares an explicit sequence of
+`.xlsx`/`.xlsm` revisions through adjacent keyed table pairs and creates a simple
+Summary/Added/Removed/Changed/Duplicate Keys workbook.
+After `Apply = Yes` is saved, selected changed cells and added rows can be copied into a new verified workbook;
+sources are hash-rechecked and never overwritten. The detailed contract is in `docs/add-in-reference.md`.
+
+**Compare revisions** is the primary ribbon action and multi-revision alpha, also available in the Hub. Select 2–20 distinct
+`.xlsx`/`.xlsm` files, review and correct the inferred order and parent links,
 choose the master and optional trusted baseline, and explicitly confirm the lineage before analysis. The
-sources remain read-only. Conservative sheet/header/key and row/column alignment builds logical history and
-grouped changes only when the evidence is strong enough; ambiguous identity is reported in **Diagnostics**
-instead of being guessed. The alignment-correction loop is implemented end to end. When analysis is incomplete,
+sources remain read-only. Cell-content comparison prioritizes stored values, saved calculated values, and
+formulas. Sheet, row, and column structure is alignment context. Styles, fills, comments, drawings, and package
+metadata are not comparison changes; they are used only for safe reading and integrity checks.
+Blank-versus-missing storage is retained only for alignment safety. Conservative sheet/header/key and
+row/column alignment builds logical history and grouped changes only when the evidence is strong enough;
+ambiguous identity is reported in **Diagnostics**
+instead of being guessed. Inserted and deleted rows and columns are aligned across revisions. Repeated exact
+rows are paired in monotonic order with surplus occurrences reported as structural changes, while a competing
+reorder remains unresolved. Tables identical in stored values, saved calculated values, and formulas preserve
+positional identity even with duplicated rows or headers, and a blank-headed column can align from strong
+neighboring and content evidence. For dynamic-array cells, stored values, saved calculated values, and exact
+formulas remain reviewable with a warning. Spill metadata is retained only for safety classification, and merge
+stays blocked while spill semantics are unmodeled. The alignment-correction loop is implemented end to end. When analysis is incomplete,
 or confirmed overrides remain active, its review window can confirm exact sheet pairs, header/no-header choices
 with an optional separate first-data row, and one-to-four ordered key-column pairs, or clear any choice back to
 automatic inference. Each change appends an audit event, and **Rerun analysis** reuses the retained immutable
@@ -93,17 +109,20 @@ empty immutable decision generation in a separately hashed, manifest-bound Custo
 generations use a versioned append-only event chain and are reconstructed by deterministic policy replay rather
 than by trusting a stored effective-state snapshot. Diagnostic-only results do not claim that decision catalog.
 
-Current in-process limits are 768 MiB across the selected inputs, 2,000,000 stored cells, 10,000,000 bounded
-grid cells, 32 MiB of embedded Review state, and a separately bounded 16 MiB/10,000-event decision sidecar.
-Each sheet's grid is content-bounded by its first and last formula/value rows and columns. Physically stored blank
-or formatting-only cells outside that rectangle are reported and ignored for alignment, while blank evidence
-inside it is retained; all physical cells still count toward the stored-cell parsing limit.
+Current in-process limits are 768 MiB across the selected inputs; 2,000,000 physically stored cells per revision
+and 10,000,000 audited across the project; 2,000,000 stored cells retained inside useful ranges; 10,000,000
+bounded grid cells; 32 MiB of embedded Review state; and a separately bounded 16 MiB/10,000-event decision
+sidecar. Each sheet's grid is bounded by its first and last rows and columns containing a stored value, saved
+calculated value, or formula. Physically
+stored blank or formatting-only cells outside that rectangle are reported and released before alignment. They
+count only against the larger audit ceilings; blank storage inside the rectangle is retained for alignment safety
+but is not reported as content.
 Review import caps the compressed package at 128 MiB and aggregate declared expansion at 768 MiB. Unrelated and
 legacy entries remain limited to 64 MiB; the eight canonical relationship-bound projection worksheets may stream
 up to 512 MiB each, with one unique bound shared-string table up to 256 MiB. Streaming validation is limited to
 8,000,000 cells and 100,000 hyperlinks.
-Synthetic Pipeline4-shaped alignment regressions are green;
-tuning against the real workbook corpus remains pending. Multi-revision `.xlsb` and delimited inputs, arbitrary
+Synthetic Pipeline4-shaped alignment regressions and the supplied real R1.0/R1.1 sorter pair are green;
+tuning against a broader real-workbook corpus remains pending. Multi-revision `.xlsb` and delimited inputs, arbitrary
 duplicate row/column resolution, visual snapshots, complete source-backed project resume, Excel-sheet synchronized
 context menus,
 the user-facing transactional merge writer, and complete archive export remain to be built. The immutable

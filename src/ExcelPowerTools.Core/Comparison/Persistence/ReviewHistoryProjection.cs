@@ -147,12 +147,25 @@ namespace ExcelPowerTools.Core.Comparison.Persistence
                     revision.Confidence));
             }
 
+            var formulaTextSubjects = new HashSet<string>(
+                history.Subjects
+                    .Where(item => item.Aspect == CellChangeAspect.Formula)
+                    .Select(item => item.LogicalSubjectKey),
+                StringComparer.Ordinal);
             var details = new List<DetailCandidate>();
             foreach (LogicalSubjectHistory subject in history.Subjects
                          .OrderBy(item => item.LogicalSubjectKey, StringComparer.Ordinal)
+                         .ThenBy(item => AspectRank(item.Aspect))
                          .ThenBy(item => item.Aspect)
                          .ThenBy(item => item.SubjectId, StringComparer.Ordinal))
             {
+                // Formula attributes and shared/array metadata are part of the Formula channel. When exact
+                // formula text also changed, retain the metadata in authoritative history without creating a
+                // fourth, duplicate visible content row. A metadata-only change is still shown as Formula.
+                if (subject.Aspect == CellChangeAspect.FormulaStructure &&
+                    formulaTextSubjects.Contains(subject.LogicalSubjectKey))
+                    continue;
+
                 ReviewSubjectDisplayMetadata display = displayByKey[subject.LogicalSubjectKey];
                 HistoryObservation before = EndpointBefore(history, subject);
                 HistoryObservation after = EndpointMaster(history, subject);
@@ -383,10 +396,22 @@ namespace ExcelPowerTools.Core.Comparison.Persistence
             switch (aspect)
             {
                 case CellChangeAspect.Formula: return "Formula";
-                case CellChangeAspect.FormulaStructure: return "Formula structure";
+                case CellChangeAspect.FormulaStructure: return "Formula";
                 case CellChangeAspect.Value: return "Value";
-                case CellChangeAspect.CachedResult: return "Cached result";
+                case CellChangeAspect.CachedResult: return "Calculated value";
                 default: return "Cell presence";
+            }
+        }
+
+        private static int AspectRank(CellChangeAspect aspect)
+        {
+            switch (aspect)
+            {
+                case CellChangeAspect.Value: return 0;
+                case CellChangeAspect.CachedResult: return 1;
+                case CellChangeAspect.Formula: return 2;
+                case CellChangeAspect.FormulaStructure: return 3;
+                default: return 4;
             }
         }
 
@@ -431,9 +456,9 @@ namespace ExcelPowerTools.Core.Comparison.Persistence
             switch (aspect)
             {
                 case CellChangeAspect.Value: return 0;
-                case CellChangeAspect.Formula: return 1;
-                case CellChangeAspect.FormulaStructure: return 2;
-                case CellChangeAspect.CachedResult: return 3;
+                case CellChangeAspect.CachedResult: return 1;
+                case CellChangeAspect.Formula: return 2;
+                case CellChangeAspect.FormulaStructure: return 3;
                 default: return 4;
             }
         }

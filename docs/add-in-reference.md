@@ -22,12 +22,20 @@ workbook, so they now persist per-user in the registry under
 
 ## User interface
 
+**Comparison rebuild, 10 September 2026:** a fresh implementation is in progress under the
+[approved comparison plan](C:/Source/Repos/excel_tools/docs/spreadsheet-comparison-plan-2026-09-10.md).
+The new saved-file reader and alignment core are currently tested through the repository's test suite,
+including a read-only trial on five real sorter revisions. There is no new launchable review workflow yet.
+The comparison ribbon/Hub descriptions below refer to the pre-existing implementation, not the rebuild.
+See [the build checkpoint](C:/Source/Repos/excel_tools/docs/spreadsheet-comparison-build-2026-09-10.md)
+for current support boundaries and validation evidence.
+
 The **Power Tools** ribbon is a compact command strip, grouped by workflow rather than by implementation:
 
 | Ribbon group | Direct actions |
 |---|---|
 | Power Tools | Tools Hub, Undo, Redo, Timeline |
-| Compare & review | Compare revisions, Exact two-file preview, Open Review workbook |
+| Compare & review | Compare revisions, Keyed table comparison, Apply selected changes, Exact two-file preview, Open Review workbook |
 | Delimited workspace | Open data (files/folder split button), Save file, Save all, Index |
 | Transform | Keep values, Smart fill, Change field, Regex replace |
 | Clean & analyze | Natural sort (ascending/descending split button), Deduplicate, Column stats |
@@ -52,21 +60,68 @@ stays unchanged and its exact hydrated package/occurrence is rechecked on the pr
 **Compare revisions → Review workbook in Hub...** on the ribbon, or **Open Review workbook** in the Hub, to enter
 this workflow directly.
 
+## Keyed table revision comparison
+
+**Keyed table comparison...** is a secondary comparison-menu command. It accepts 2–20 distinct local
+`.xlsx`/`.xlsm` files from one or more folders, in an explicit order, and compares every adjacent step
+(`R1 -> R2`, `R2 -> R3`, and so on). Tables with the same sheet name are proposed automatically; other sheets
+can be paired explicitly. Paired key headers may have different names when mapped explicitly; every other
+populated column must retain the same unique, nonblank header in this first version. Added, removed, renamed,
+or blank-headed data columns are reported as a blocking setup error rather than silently ignored. The
+header row and one or more semicolon-separated key columns are always visible and every proposal must be
+confirmed. Key preview reports row counts, blank keys, and duplicate-key rows before the report is built.
+
+The macro-free review workbook has exactly five visible sheets: **Summary**, **Added**, **Removed**,
+**Changed**, and **Duplicate Keys**. Values retain their exact stored type, formulas are compared by exact
+stored formula text, and keyed row movement does not lose identity. Blank and duplicate keys remain visible but
+are excluded from automatic matching. Formula-valued keys and formula coverage the adapter cannot prove are
+blocked rather than guessed. Removed rows are review-only in this first working version.
+
+**Added** and **Changed** include an **Apply** column. After marking actions `Yes` and saving the review, use
+**Apply selected comparison changes...**. Apply re-reads every source and its raw-byte SHA-256, reconstructs the
+comparison, reanchors each action by its explicit key, and performs a three-way check. Selected cell changes and
+whole added rows are written to a new copy of the first revision; neither inputs nor the review are overwritten,
+and apply refuses any output filename that already exists.
+Added rows append after the last content row and formulas are translated to the new physical row. Ordinary
+single-cell formulas are supported; grouped, array, dynamic-array, data-table, or untranslatable formulas stop
+the operation. The private output stage is reopened and every written cell is verified before publication;
+`.xlsm` VBA bytes must remain identical.
+
+The keyed path has a 768 MiB aggregate input-package limit in addition to the OOXML adapter's per-file limit.
+The primary revision-alignment project and positional exact preview are separate comparison commands.
+
 ## Multi-revision comparison (Alpha)
 
-**Compare revisions** is the primary comparison command on the ribbon and is also available in the Hub with
-an **ALPHA** badge. It accepts 2–20 distinct local `.xlsx`/`.xlsm` revision files. Inventorying hashes the
+**Compare revisions** is the primary ribbon action and is also available in the Hub with an **ALPHA** badge.
+It accepts 2–20 distinct local `.xlsx`/`.xlsm` revision files. Inventorying hashes the
 read-only sources, proposes a filename/evidence-based order and parent graph, and then opens a setup window in
 which the user can reorder revisions, edit labels and parent links, choose the master and optional trusted
 baseline, and select a new `Review.xlsx` destination. The displayed order, parent links, master, and baseline
 must be explicitly confirmed before the comparison starts.
 
 The engine conservatively infers sheet identity (including supported rename evidence), headers, keys, and
-logical row/column identity across adjacent lineage edges. It builds multi-revision formula/value history and
-groups related changes only when identity is sufficiently supported. Ambiguities and unsupported coverage do
+logical row/column identity across adjacent lineage edges. It builds multi-revision history of stored values,
+saved calculated values, and formulas, and groups related changes only when identity is sufficiently supported.
+Ambiguities and unsupported coverage do
 not become guessed matches: they produce stable, verbose findings and corrective actions on the generated
 workbook's **Diagnostics** sheet. A blocked project therefore still yields a useful diagnostic Review workbook,
 but no logical history is claimed for the unresolved branch.
+
+Cell-content comparison prioritizes stored values, saved calculated values, and formulas. Saved calculated
+values are compared even when the formula also changed. Sheet, row, and column structure is retained only to
+align those channels. Styles, fills, comments, drawings, and package metadata are not comparison changes; they
+are used only for safe reading and integrity checks. Blank-versus-missing storage is retained only for alignment
+safety.
+
+Inserted and deleted rows and columns are aligned across consecutive revisions. Repeated exact rows pair in
+monotonic sequence and surplus occurrences become explicit insertions or deletions; a competing reorder remains
+blocked. Tables identical in stored values, saved calculated values, and formulas use stable positional identity,
+so duplicate rows or duplicate headers
+do not make an unchanged table ambiguous. A blank-headed column may align when its neighboring position is
+unique and at least 90% of its comparable cells agree; competing or weak candidates stay unresolved. For
+dynamic-array cells, stored values, saved calculated values, and exact formulas remain available for Review with
+a warning. Spill metadata is retained only for safety classification, and merge stays blocked until spill
+semantics can be validated.
 
 The alignment-correction workflow is implemented end to end. Before publication, an incomplete analysis—or a
 complete analysis with active confirmed overrides—opens **Comparison Project — alignment review**. Its
@@ -89,18 +144,22 @@ v2 form stores the complete ordered event audit and reconstructs effective decis
 policy replay. A diagnostic-only result intentionally has no decision sidecar.
 
 The current safety envelope is 768 MiB of input packages in aggregate (with the OOXML adapter's 256 MiB
-per-file cap), 2,000,000 physically stored cells, 10,000,000 bounded grid cells, and 32 MiB of embedded Review
-state. Review import caps the compressed package at 128 MiB and aggregate declared expansion at 768 MiB.
-The grid limit uses a per-sheet content boundary from the first through last formula/value row and column.
-Physically stored blank or formatting-only cells outside it are reported and do not expand alignment; blank
-evidence inside it remains comparable, and every physical cell still counts toward the stored-cell parsing cap.
+per-file cap), 2,000,000 physically stored cells per revision and 10,000,000 audited across the project,
+2,000,000 stored cells retained inside useful ranges, 10,000,000 bounded grid cells, and 32 MiB of embedded
+Review state. Review import caps the compressed package at 128 MiB and aggregate declared expansion at
+768 MiB. The grid limit uses a per-sheet content boundary from the first through last rows and columns containing
+a stored value, saved calculated value, or formula. Physically stored blank or formatting-only cells outside it
+are reported and released before the
+revision snapshot is retained; they count only against the larger audit ceilings and neither expand alignment
+nor consume the retained/grid ceilings. Blank storage inside the content rectangle is retained for alignment
+safety but is not reported as content.
 Unrelated and legacy entries are limited to 64 MiB; the eight canonical, workbook-listed and relationship-bound
 projection worksheets may stream up to 512 MiB each, with one unique bound shared-string table up to 256 MiB.
 The streaming projection is capped at 8,000,000 cells and 100,000 hyperlinks. Decision sidecars are independently
 capped at 16 MiB, 10,000 events, and bounded per-event collections.
 Progress, cancellation, and a privacy-safe learned elapsed-time estimate are shown during the longer
-phases. Synthetic Pipeline4-shaped alignment regressions are green, but threshold tuning against the real
-Pipeline4 revision corpus remains pending. Multi-revision `.xlsb` and CSV/TSV/TXT inputs, arbitrary duplicate
+phases. Synthetic Pipeline4-shaped alignment regressions and the supplied real R1.0/R1.1 sorter pair are green,
+but threshold tuning against a broader real-workbook corpus remains pending. Multi-revision `.xlsb` and CSV/TSV/TXT inputs, arbitrary duplicate
 row/column resolution, visual snapshots, complete source-backed project reopen/resume, Excel-sheet synchronized
 context menus, the transactional merge writer/UI, and complete archive export/import remain pending. The immutable
 ledger persists and replays full event generations, and the task pane now invokes the tested copy-on-write API to
@@ -126,7 +185,8 @@ findings/formula/writer/output proofs, commit project audit, or make this alpha 
 ## Exact comparison preview
 
 **Exact two-file preview** opens a bounded setup window with explicit **Before** and **After** roles. It reads
-the selected sources without modifying them, compares exact stored formula/value content, and creates a
+the selected sources without modifying them, compares stored values, saved calculated values, and exact
+formulas, and creates a
 macro-free `Review.xlsx` whose visible change rows are integrity-bound to embedded comparison state. Existing
 Review workbooks can be validated and reopened from the same ribbon menu, the Hub, or the Comparison workspace.
 The workspace keeps the validated report selected and shows its filename/path, project ID, state/projection hash
@@ -196,6 +256,17 @@ current IO-list format only; the pre-2026 layouts (a `PC Board Rack.Slot.Card` c
   silently when the workbook holds only one, otherwise asking which. `Pull mnemonics` takes the
   controller from the active sheet, and names it in the summary so the chosen CSVs can be checked
   against it.
+
+**How a plant CSV is recognized** (shared by the pulls, the IO Bridge workspace and its apply
+engine — `CsvColumnsMap.Locate`): by content, never by header text alone. The key columns are
+found by their **names** on whatever row resolves them (any of the first 25, row widths free —
+the ISPC export's data rows carry a trailing `;#;` marker column that its header line lacks, and
+that must not matter); when no name resolves, the file kind's **legacy fixed positions** take over
+(Inputs: Signal ID 2nd, Node 12th, Offset 13th, Bit 14th, Card 16th; Outputs: name 2nd, Node 5th,
+Offset 6th, Bit 7th, Board 9th — 1-based), accepted only when the data there actually reads as
+signals (text names, numeric addresses) — so picking a wrong CSV (a `BusField.csv`) still refuses
+with a plain message instead of silently mis-joining addresses. The pulls' per-file summary notes
+when the positional fallback carried a file.
 - A header row within the first 20 rows carrying both a `Bit` and a `Mnemonic` column.
 - Signal rows put the full address in `Bit` as `I.node.offset.bit`; `Q` is accepted for outputs and
   normalized to `O`. Components compare numerically, so `I.0080.3.0` and `I.80.3.0` are the same address.
@@ -228,9 +299,12 @@ address, so it is never mistaken for one.
 
 Two CSV types are handled apart from the address key:
 
-- **Virtual types (5 VDI, 6 VDO, 9 VAI, 10 VAO)** — not hardware I/O; their address fields are
-  frequently stale, so they are excluded from matching and counted separately in the summary. The full
-  CSV type taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI · 8 DEO · 9 VAI · 10 VAO · 11 BUS.
+- **Virtual types (5 VI, 6 VO, 9 AIS, 10 AOS, 13 VAI, 14 VAO)** — not hardware I/O; their address
+  fields are frequently stale (every export on file writes AIS/AOS at 0.0.0), so they are excluded
+  from matching and counted separately in the summary. The CSV type taxonomy is the controller's own
+  `SIGNAL_TYPE_*` defines: 1 DI · 2 DO · 3 AI · 4 AO · 5 VI · 6 VO · 7 DEI · 8 DEO · 9 AIS · 10 AOS ·
+  11 BUS · 13 VAI · 14 VAO (12 skipped: inputs are odd, an output is its input + 1). The tooling's
+  VDI/VDO spellings mean 5/6.
 - **Type 11 (bus diagnostics)** — address a device, not a bit. They join on `card` + `node` alone,
   against the module rows. The IO list prefixes those mnemonics with `BUS_`; the prefix is dropped on
   the way into the CSV, since the CSV never carries it.
@@ -281,7 +355,7 @@ in the Tools Hub, and (while a session is live) on the cell right-click menu.
 
 **Setup** (*open workspace*) — one IO-list workbook, which of its `R{rack}.S{slot}.C{card}` sheets, one
 Inputs + one Outputs CSV, plus per-session tuning: an **IO column limit** (first N source columns per
-sheet, 0 = all), a **compare-virtuals regex** (virtual CSV rows — types 5/6/9/10 — whose mnemonic
+sheet, 0 = all), a **compare-virtuals regex** (virtual CSV rows — types 5/6/9/10/13/14 — whose mnemonic
 matches join the comparison BY NAME, for the CLASSDIAGAL-style virtuals that mirror IO-list entries)
 and an **exclude regex** over IO-list MNEMONICS: a matching mnemonic drops out of the comparison
 while the rest of its cell still joins — the case is a generator key riding along a real mnemonic
@@ -293,7 +367,22 @@ mnemonic matches is excluded whole: shown, no claim, no verdict, faded. All reme
 registry. Builds and refreshes run behind an opaque
 "working…" curtain — Excel's SDI window churn is covered, not fought.
 
-**Virtual twins** — a virtual CSV record (type 5/6/9/10) that carries an IO point's mnemonic
+**Moved signals (found at a different address)** — a signal row the address pass cannot pair, whose
+mnemonic the CSV carries at **another address** (the list says `I.35.1.0`, the
+CSV `I.35.4.0`) — on the same card, or on **another card** —, is paired by name instead of reading `missing` beside a `CSV-only` leftover. The row
+reads `Signal · moved`, verdict `moved` (never the clean green), and the CSV block shows where the
+record really sits. The pass runs *before* the positional fallback, so a shifted block or a
+swapped pair is not mis-paired with whichever unrelated row now occupies the old address. A record on another card is taken only after every selected card has claimed its own, so it
+never robs the sheet it belongs to; the row then also reads `· card N`, and only **A** is offered:
+it moves the record to the IO row's address AND card (the Card field is set too), since an IO-list
+address cannot name another card. A name the CSV carries twice is never treated as a move. The existing address actions
+align either side: **A — Update address on CSV** (the record moves to the IO row's address; only the
+node/offset/bit parts that differ are queued) and **B — Update address on IO list** (the list takes the
+record's address). An alignment is **not offered on the side where the destination is already taken**
+— another record at the IO address, or another IO row at the CSV record's address (a swap or a
+shifted block) — because it would collide; the other side stays available.
+
+**Virtual twins** — a virtual CSV record (type 5/6/9/10/13/14) that carries an IO point's mnemonic
 LOOKS like the signal but acquires nothing from the field. Such a record is the point's *twin*:
 the join binds it to the IO row flagged — row label `Signal · virtual twin`, verdict `virtual`
 (never the clean green), a **red outline** around its CSV block — instead of leaving the row
@@ -328,7 +417,8 @@ module without its type-11 record reads `missing` like any gap.
 
 **Editing** — typing into IO or CSV data cells **queues** the change (the cell keeps the typed value,
 painted pending-yellow immediately; typing the old value back unqueues). *Row actions* — with
-letter accelerators, on one row or a whole selection — queue the linked-pair updates in either
+letter accelerators, on one row or a whole selection, **visible rows only** (a selection drawn
+over a filtered sheet spans the hidden rows too; the action lands only on the rows you can see) — queue the linked-pair updates in either
 direction (M/N mnemonic, A/B address, C/D condition), description→CSV (E), **integrate** (I;
 signals ask the CSV Type once per direction, bus modules go straight in as type 11 with the `BUS_`
 prefix dropped; empty-mnemonic spares are never integrated), disable/enable (X/V) and delete (Z).
@@ -378,32 +468,170 @@ the **SWP Bridge** ribbon group and in the Hub.
 **Setup** (*open workspace*) — pick the SWP file inside its dated version folder (`NN_dd-MMM-yyyy`);
 the system **root** (the parent) and the CONFIG_PLANT name derive from it, and a `swp-bridge.json`
 sidecar found at that root pre-fills everything else — returning to a system is one pick + OK.
+A system can also be reached from the other end: the **Session** row's *Open…* lists every saved
+session (`*.json`, plus `*.json.bak` for recovery) and **replaces** the whole form with the one you
+pick — its settings, per-row decisions, dictionaries and queue (the automatic prefill only ever
+completes what the SWP pick left blank). That is how a system whose SWP was renamed or moved is
+reopened — the dialog then says which workbook the session expects and asks for it — and how a
+damaged sidecar is recovered: open the `.bak`, and the next decision writes it back as the live one.
+If another session's apply has since created a newer `NN_…` folder holding this session's SWP
+(copied along, see *Copy along* below), the session **follows the newest one**, and the line under
+the SWP names the folder the session had recorded.
+
+*Save as…* beside it saves the session under a new name, **anywhere** — and from then on the session
+**is** that file. It is written at once with everything above; the dialog works on it; a workspace
+running on the session the dialog had open writes its next decision there (cancel instead of
+building, and the file is rewritten with the settings that workspace actually runs); and Setup opens
+on it next time — the running session first, then the last one saved or built, then the last SWP
+root. That is how one IO list drives two SWP systems as two named sessions kept together in one
+folder, which is where both dialogs start. Picking an SWP never swaps a named session for a root's
+default `swp-bridge.json`, and the Home sheet's header line names the session file first. A session
+saved at its own root stays **self-locating** (it records no root, so moving the whole system folder
+keeps working); only one saved elsewhere records which system it belongs to. Building a session for
+a *different* SWP than it was saved for would overwrite its decisions, so the dialog says so first
+and points at *Save as…*.
+
+*Save as new…*, the third button, starts a **new** session from the one in hand, saved under a new
+name anywhere, carrying **everything that is not history** — every setting and file reference, the
+dictionaries, the glossary corrections and the strobe templates — while the queue's history and the
+per-row decisions start **empty**. It is the other half of "one IO list, two SWP systems": *Save as*
+copies the whole history, which is right for renaming or moving a session, but carried into the
+second system it is the first system's decisions riding along on mnemonics both cards share. The
+dialog switches to the new file (and Setup opens on it next time); a workspace running on the old
+session does **not** move — its queue and decisions stay in the file they came from — and building
+from the dialog rebuilds into that same workbook with the fresh session.
+
+A **reference SWP is required** — a known-good workbook of the same plant type. It is the only
+thing that can tell a row whose formulas drifted from one that is merely different, and the only
+way back for a row whose CONFIG_PLANT template reference was destroyed, so a workspace without one
+has no answer when a formula turns out damaged.
+
 Then: plant type (**MSC** sorter / **ISPC** induction / **UPS** upstream / **SAFETY** for the
 direct-to-SCADA safety PLC — MSC-shaped mnemonics on a cabinet-only SWP) with the first-line and
-group parameters, the workspace's **second-language code** (a free 2-letter glossary code —
+group parameters. Those two are **read off the SWP's own tab names** — `IL02_…`/`IL03_…` with
+`ILGRP02_CABINET` gives first line 2, group 2 — because the mnemonic table builds its destination
+sheets from exactly those numbers, so retyping them is re-deriving what the file already states and
+one wrong digit sends every row to a sheet that does not exist. The note under the boxes names the
+sheets they came from; the values stay editable. UPS tab names carry the system id but no group
+(the conveyor group is a `SysGroupNN` fact of the PRODUCTION tree), and MSC/SAFETY have no
+numbered sheets at all — there the typed values stand.
+
+Then the workspace's **second-language code** (a free 2-letter glossary code —
 PT, FR, IT, …), the IO-list workbook + its `R.S.C` card
-sheets, and ONE optional **Production root** — the realtime `PRODUCTION` folder (or the backup
+sheets (with the include/exclude regexes that decide which of its mnemonics are diagnostics at
+all) — and when the workbook names **no** `R.S.C` sheet, the sheets whose header row carries
+**Mnemonic + Bit** are offered instead (the pair the card reader itself needs), the label
+reading *Card sheets (by header: no R.S.C names)*: the safety PLC's list names its one card
+sheet by network (`NET SAFETY 192.168.20`) and its cover, cabinet table and fill helper carry no
+such pair. Names first, content only when the names name nothing, so a sorter list never grows
+an extra ticked sheet because a summary tab happens to hold a Mnemonic column — and ONE
+optional **Production root** — the realtime `PRODUCTION` folder (or the backup
 folder that contains it), resolved live by the real tree layout: `IODriver\BusField.csv` for every
 plant; `MSC\DB_Csv\` (Plant_Inputs, Destination_Parameters for the chute remap,
 BUS_ExtendedDiagnostic for the AS-I slave bindings) and
 `DataDrawSupervisor\DataDraw_PlantData\AlarmLists\` for the sorter; `ISPC\db_csv\Plant_Inputs.csv`
 and `ISPC\AlarmLists\` for induction; `ConveyorSys\SysGroupNN\Database\DB_Params\` (Sensor,
 StrobeDevice for the generators) and `…\DB_Diag\` for upstream (the configured group, else the only
-one); flat copies directly under the root work too, and SAFETY looks up flat copies only. The
+one); flat copies directly under the root work too. **SAFETY consumes only the SCADA's
+`Alarms_*.txt` export** — a Siemens safety PLC talks to SCADA over its own OPC UA server and has
+neither an IODriver busfield nor a realtime Plant_Inputs, so neither is listed — probed in an
+`Alarms List\` child (where the safety system keeps it, beside the SWP), an `AlarmLists\` child,
+or flat under the root; the SWP's own version folder therefore serves as the root. The
 dialog lists what resolved (✓ green) and what stays off (✗ red) — only the inputs the plant type
 consumes are listed at all; the resolution re-runs at every build and
 the resolved paths land in the sidecar (a sidecar from before the root keeps its per-file paths
-until a root replaces them). The five write rules carry tooltips saying what each one puts in the file. One deserves spelling
-out here: **Never overwrite CONFIG_PLANT descriptions**. The text SCADA shows is CONFIG_PLANT's
-template *concatenated with* the SWP's description cell (`SUBSTITUTE(CONFIG!template & T{row}, …)`),
-so writing the composed IO description into T stacks a second sentence onto a template that often
-already says the same thing. Ticked, the rows this bridge generates (photocells, strobes) and the
-`P*`-typed module rows keep CONFIG's wording — the bridge contributes only the FLD label, and
-proposes no description edit at all when there is no mismatch, so an existing template-fed cell is
-never blanked. The exported **Alarms_*.txt
+until a root replaces them).
+
+The write rules are grouped by the QUESTION they answer, and the last two have the same shape
+because they are the same kind of question: **one exclusive default, one destination-sheet regex
+naming the sheets that take the other mode, and a per-row column that wins over both** (resolved
+most-specific-first: tick → sheet rule → default). Every caption names the mode it applies and
+flips with the default; every answer is stored as the mode it chose, never as a "flip", so changing
+a default later can never silently reverse a recorded decision; and each build reports how many
+rows a pattern moved, because a rule moves rows with no visible gesture on them.
+
+**CONFIG_PLANT** — what happens to the template's text, as two radio buttons:
+
+- **Never overwrite CONFIG_PLANT descriptions.** The text SCADA shows is CONFIG_PLANT's template
+  *concatenated with* the SWP's description cell (`SUBSTITUTE(CONFIG!template & T{row}, …)`), so
+  writing the composed IO description into T stacks a second sentence onto a template that often
+  already says the same thing. Chosen, every row keeps CONFIG's wording and the bridge contributes
+  only the FLD label — and no description edit at all when there is no mismatch, so an existing
+  template-fed cell is never blanked. It keeps CONFIG's **words**, though, and never starves the cell
+  a kept formula shows: where the formula already displays `T`/`U` after a template that says nothing
+  past its last placeholder — CABINET's `INTRODUCTION %1 - ARMOIRE DE GROUPE %2 - ` followed by
+  `&" "&U{row}` — there is no sentence to stack onto and that cell is the alarm's only name, so the
+  composed description is written there in both languages while the formula stays untouched (`_Log`
+  counts those rows). It is read from what the cell displays — the cached text, the description's
+  own text removed, cut after the block label — and a display that cannot be read (no cached value,
+  a file patched and not yet recalculated by Excel) keeps the label-only treatment. Withholding the
+  description there is what left a French-only SCADA reading the English an older run had put in `U`.
+- **Replace the template's trailing text with the row description** — the **Q/R formula rebuild**,
+  below.
+
+They are radio buttons because they are two answers to ONE question: a row cannot both keep the
+template whole and cut its tail off. (Before, they were independent checkboxes, and the third
+state — compose the description *and* leave the formula alone — was the stacking shape above.
+A sidecar carrying neither switch migrates to the rebuild and says so in its load notes.) The
+per-row column decides outright, and its caption flips: `[Keep CONFIG text]` under the rebuild,
+`[Write IO text]` under "never overwrite". Rows a rule or a tick excepted are counted in `_Log`.
+
+A CONFIG template reads
+`INDUCTION %1 - BELT %2 - SPARE ALARM.63`: a head naming the place (`%1` = the sheet description
+`B6`, `%2` = the block's electrical label) and a tail naming the bit generically — while the SWP's
+own `T`/`U` cell already names that bit in the plant's words. Chosen, every joined row's formula is
+rebuilt to keep the template **up to its last placeholder** and put `T`/`U` where the tail was, so
+SCADA reads `INDUCTION =S1+IN22 - BELT =S1+IN22.05 - FIELD BUS FAILURE - DRIVE [n0115-…]`. The
+emitted shape keeps the row's own template reference and truncates it **before** substitution:
+
+```
+=LET(t,[1]DB_IL_BELT!$K$122,p,FIND(CHAR(1),SUBSTITUTE(t,"%",CHAR(1),LEN(t)-LEN(SUBSTITUTE(t,"%","")))),
+     SUBSTITUTE(SUBSTITUTE(LEFT(t,IFERROR(p,LEN(t))+1),"%1",$B$6),"%2",F679)&" - "&T778)
+```
+
+Truncating first is not a detail: once `%1`/`%2` are replaced the markers are gone, and cutting the
+rendered text at `" - "` breaks on every template whose own tail contains one (`FIELD BUS FAILURE -
+DRIVE`). `CHAR(1)` is the sentinel that finds the last `%`; `IFERROR` keeps a template with no
+placeholder at all from poisoning the cell. The file spells it differently from the formula bar:
+`LET` is stored as **`_xlfn.LET`** and its parameter names as **`_xlpm.t`** / **`_xlpm.p`**. Each
+half matters. A modern function spelled bare comes back as `_xludf.<name>` and shows `#NAME?` —
+what the previous wholesale `CONCAT` rewrite did. A LET parameter spelled bare is worse: Excel's
+loader **removes the formula on open** ("Removed Records: Formula from …"), keeping only the cached
+value — what the first build of this rebuild did. Excel displays the stored form back as
+`=LET(t,…)`, as shown above. A cell still holding that first, unloadable shape is recognized and
+rebuilt into the loadable one on the next build. A Q/R cell that holds a plain value instead — a
+paste-over, or a formula Excel removed while repairing a file, frozen at its last correct text —
+has no template to rebuild from and can never show `T`/`U` again; it is **named in `_Log`**, not
+skipped, and the reference SWP or the file's `.bak` is what restores it.
+
+Two rows never get the rebuilt shape, because on them the tail is the only thing naming the alarm:
+a row **excepted** into "never overwrite" (its `T`/`U` takes the FLD label alone) and a **mismatch
+row the IO list gave no description**. Those keep the plain `&" "&T` append. A row whose template
+reference is **gone** — what the old wholesale rewrite left behind — cannot be rebuilt from itself:
+it is named in `_Log` and left alone, since restoring a lost template is the reference-SWP formula
+audit's job. The **Formulas** column on the spine reads `rebuild` or `append` accordingly.
+
+**ELECTRICAL_DESIGNATION** — where the functional unit / location / device land — is the same
+shape: the append/overwrite radio pair, its own destination-sheet regex, and the per-row
+`[Append FLD]` / `[Overwrite FLD]` column. It is described in full under the FLD rule below.
+
+The exported **Alarms_*.txt
 files** feed the third coherence leg:
 every checked mnemonic must appear among the exported alarms and the exported texts must carry
-the row's Location and Device (description 2 checked only when exported). WHICH objects are
+the row's Location and Device (description 2 checked only when exported).
+
+**Only the lists this SWP exports are read.** A production folder commonly holds the alarm lists
+for a whole plant — or for every system of one type — so they can be collected from one place, and
+each controller then picks its own because the indexes are global. Every diagnostic sheet names the
+file it exports in **row 5, "Output filename"** (`Alarms_S1_CABINET.txt`), and that set decides:
+a file no sheet claims is **skipped with an `_Log` Info line** rather than parsed, because a
+sibling controller's list is shaped for different mnemonics and every line of it would otherwise be
+reported as malformed (a sorter SWP handed the induct list read `Alarms_S1_IL03.txt line 414:
+mnemonic "IL03.BELTWR0630" has the wrong length`, and so on for the whole file). The loaded-count
+line names how many files were left out. Two guards keep the filter from hiding real problems: an
+SWP whose sheets declare nothing — an older file — reads **every** offered file rather than
+silently dropping them all, and a folder where **no** offered file belongs to this SWP is a
+Warning, since "nothing to check" must never read as "everything checks out". WHICH objects are
 checked and with WHAT index shift comes from the **`_Offsets` table** (below) — the official
 values reproduce the v49 "ddsng 9.4.2" semantics (MSC cabinets export +1, ISPC line cabinets
 1:1 with groups −1, UPS cabinets −1 with belts/zones 1:1, SAFETY 1:1 zero-based). The Workspace
@@ -440,8 +668,15 @@ sidecar is the state.
 **The Workspace sheet** (the spine) — one flat sheet, one row per diagnostic mnemonic in
 IO-list order: the IO side, the
 computed SWP coordinate (`DB_TAG.AlarmN>entry>bit`, the legacy address math ported verbatim —
-CABINET/CLASSDIAG for MSC and SAFETY with class types 62 CHUTE, 64 SCANNER, 66 CONTROL_ZONE,
-69 CHECK_POSITION, 73 CELL_TEST, 112 AIR_BLOWER and 113 ITEM_LOCATOR, CABI/BELT/ZONE →
+CABINET/CLASSDIAG for MSC with class types 62 CHUTE, 64 SCANNER, 66 CONTROL_ZONE,
+69 CHECK_POSITION, 73 CELL_TEST, 112 AIR_BLOWER and 113 ITEM_LOCATOR — SAFETY takes the sorter's
+CABINET and EMERGENCY shapes and **nothing else**, a safety SWP being the cabinet sheet alone
+(rules §9.2), so a CLASSDIAG mnemonic in a safety list is simply not a diagnostic there; its
+signal rows carry Siemens absolute addresses with no node (`I.0.4`, `I0.4`, `%I12.7` — a
+distributed input is unique PLC-wide), which SAFETY alone reads and writes to the SWP's I/O
+address as the TIA form `I0.4`, outputs skipped as ever, while on any other plant type that
+three-part shape stays the "unreadable I/O address" error it is (a sorter row missing its bit) —
+CABI/BELT/ZONE →
 IL/ILGRP sheets for ISPC, ALLQ/ALLB/ALLZ quads → UP sheets for UPS, EMERGENCY→CABINETAL and
 EMERI_→ALLQ_ rewrites included — anchored at the START of the mnemonic, so command signals
 like `A_RESET_EMERGENCY` are neither rewritten nor treated as diagnostics),
@@ -450,14 +685,16 @@ Headers are colored by SOURCE — blue for the IO list, lavender for the checked
 orange for the SWP, olive for the override columns — and every column autofits to its largest
 cell. The block identity is one column per field, **FU (IOL / SWP)** and **Loc (IOL / SWP)**
 right before Device: the value alone when both sides agree, `io / swp` (tinted) when they differ.
-The **Formulas** column is the row's formula status: `append` / `rewrite` for a queued Q/R
+The **Formulas** column is the row's formula status: `append` / `rebuild` for a queued Q/R
 description-formula change, `repair H` / `repair I` / `repair H+I` when the cleaner queued a
 restoration of that SWP row's FUnit/Location formulas — painted with the action's queue status.
 The SWP-related headers wear **light orange** (the IO side stays blue) for a quick spot. Row
 states are font colors — green up-to-date, red missing/invalid/duplicate, orange label mismatch;
 pending "▸" cells carry the queue highlight (yellow pending, red conflict, blue applied
 externally). Two mnemonics resolving to the same SWP row are surfaced as **duplicates and queue
-nothing** (the legacy silently let the last one win). Rows without a bit address take their node
+nothing** (the legacy silently let the last one win). An SWP row whose identity cell (A, C or D)
+caches an **error value** (`#REF!` after a row deletion) cannot be matched and receives no update
+at all — `_Log` lists such rows (ten per sheet, then a count) instead of letting them fail silently. Rows without a bit address take their node
 from the ID column — numeric Profinet nodes and **AS-I `nA`/`nB` addresses** both count (the SWP
 receives `236.0.0` for a Profinet module and the composed `1M.24A` — line.slave, no `.0.0` — for
 an AS-I slave); any other ID leaves the row addressless, its G untouched — this is
@@ -479,7 +716,10 @@ chose, never as "flip", so changing the workspace default later cannot silently 
 decision; a row whose stored answer has become the default simply shows unticked. The FLD rule
 holds under either FLD choice — the identity always lands somewhere, only *where* changes. Unlike
 the workspace setting, an explicit `[Keep CONFIG text]` tick also bypasses that setting's automatic
-scope, so it works on any row. Editing one recomputes the diff **in memory** — no file is re-read. `_Dictionary`
+scope, so it works on any row. Editing one recomputes the diff **in memory** — no file is re-read —
+and the sheet's **AutoFilter criteria survive the re-render** (the filters you set, and the
+dashboard's filter-to-sheet, are captured before the refill and re-applied after; a filter Excel
+cannot express as criteria — by colour or icon — cannot be read back and is dropped). `_Dictionary`
 (the description find→replace pairs, per language) and `_StrobeTemplates` (the strobe alarm
 blocks) are free-edit sheets saved on every change and applied on the next refresh.
 
@@ -491,7 +731,18 @@ family — `FIELD BUS DEVICE FAILURE`, `FIELD BUS FAILURE - DRIVE/COUPLER/GATEWA
 its official casing and glossary translation; anything else is replaced by the glossary's
 dedicated **`FIELD BUS MODULE FAILURE`** row (both languages) with a `_Log` warning naming the
 unofficial text. Per-language fallback constants serve only glossary-less workspaces (an
-internal table — the former `_Languages` sheet is gone). A blank language-2 falls back to language 1. On an FUnit/Location mismatch the
+internal table — the former `_Languages` sheet is gone). **Text landing in Description 2 always
+passes the language-2 dictionary last**: a glossary match keeps the IO list's language-2 variable
+part whenever the IO list WROTE one — a part the dictionary then empties still counts as written,
+so nothing rides in its place (the FVT safety list's `CH1/CH2` markers, deleted by rule on both
+sides, used to come back in raw from language 1 — 2026-09-22); only an IO list with no language-2
+variable part lets language 1's ride, cleaned by the language-1 dictionary and then the language-2
+one, and the `_Log` warning names the text as it lands. A blank language-2 falls back to language 1,
+and once a second language other than English is configured that fallback is a `_Log` warning naming
+the row: a SCADA offering only that language shows the language-1 text as it stands.
+An **empty composed description never blanks an existing T / U** (a stale text still names the
+alarm; a blank one names nothing) — the FLD label alone still lands, and the kept text is noted in
+`_Log`. On an FUnit/Location mismatch the
 mismatch **always warns** (`_Log`, Warning severity) — a deliberate mismatch is silenced per
 row with the persistent **[Mismatch OK]** override (generated rows are auto-silenced), which
 also clears the orange verdict; the warning's wording follows the row's FU/Location formula
@@ -503,8 +754,9 @@ list's Functional unit / Location / Device are the most important information th
 `+SAFETYDOORS` for sixteen doors means a service call instead of a repair), so they must ALWAYS
 be visible, either in the row's own cells or in its descriptions. One exclusive setup choice:
 **append identity to descriptions** (the compacted label lands in T/U, the device blanks, and
-template-only Q/R formulas — ones not referencing `T{row}`/`U{row}` — get the `&" "&T` extension
-automatically, since that is the only way the appended identity reaches the displayed text) or
+template-only Q/R formulas — ones not referencing `T{row}`/`U{row}` — are extended automatically,
+since that is the only way the appended identity reaches the displayed text: with the rebuilt shape
+where `T`/`U` carries a description, with the plain `&" "&T` append where it carries the label alone) or
 **brutal overwrite** (the IO FU / Location / Device replace the row's own H / I / J cells — H and
 I become plain values over the block formulas, which the formula cleaner reads as deliberate; the
 descriptions are written as-is; the comparison then stands on the row's own cells, so an
@@ -512,11 +764,42 @@ overwritten row reads up to date). A row whose H/I are shared formulas cannot be
 headlessly and falls back to the append with a warning. Fieldbus-module rows go through the same
 policy — their specialness ends at the description composition.
 
+That choice is the workspace **default**, and one **destination-sheet rule** may except whole
+sheets from it: a regex under the two radio buttons, matched (case-insensitively) against the
+**SWP sheet a row lands on** — `BELT$`, `^UP0[12]_` — names the sheets that take the OTHER
+treatment; every sheet it misses follows the default. One pattern is enough because the treatment
+is binary, so the caption beside the box names the mode it applies and flips with the default
+("…but append identity to descriptions on SWP sheets matching:" under an overwrite default, and
+the reverse under an append one); the answer is stored as the **mode it chose**, never as a flip,
+so changing the default later cannot silently reverse what the rule does. It generalizes what was
+once hardcoded as "sheets ending in BELT": whole sheets routinely want the other treatment, and
+ticking every row on one by hand is not a workflow. The three levels resolve **most specific
+first — the per-row `[Append FLD]` / `[Overwrite FLD]` tick, then the sheet rule, then the
+default** — and on a rule-governed sheet the tick flips the row away from the RULE's mode, so a
+tick always changes something. Each build reports how many rows the pattern moved (`_Log`, Info).
+Setup refuses a pattern that does not parse; one that reaches a build anyway is **inert, never
+fatal** — every sheet follows the default and `_Log` says so, because losing a build to a typo is
+worse than treating the typo as "no exception". The FLD rule itself is untouched either way: a
+matched sheet still carries the functional unit, location and device, only the place they land
+changes. **An empty IO-side value never
+erases what the SWP holds**: a missing Functional unit, Location or Device in the IO list is missing
+data, not a blank to write — it neither matches nor mismatches, never lands in H / I / J, and never
+blanks J in append mode (the blank is proposed only when a device actually moved into the label);
+the SWP's own member stays, and `_Log` names the kept device. A row carrying no identity at all —
+every strobe alarm the bridge generates, a photocell whose `PHT_*` row is missing — leaves the SWP
+row's identity untouched: silently for a generated row, with a warning for an IO-list row. The
+append extension reaches every formula shape that does not already reference the description cell;
+a Q/R cell holding a plain VALUE (a pasted-over literal, which would display nothing of the label)
+is rewritten as a formula over the same text with the description cell appended, noted in `_Log`.
+
 **The glossary** (optional): setup accepts the standard *Glossario Troubleshooting* workbook and
 the project's *Glossario ombra* — any sheet whose header row carries **EN plus language codes**
 parses; the shadow file wins on a shared phrase. Matching is whole-phrase only, in two tiers: a
 pair applies when the row's **Description permanent part equals its EN phrase** (trimmed,
-case-insensitive; the variable part rides along untranslated), or — field files split compliant
+case-insensitive; the variable part rides along — the IO list's **language-2** variable part when it
+has one, because that is its own translation of the part, and the language-1 one only when it has
+none, which `_Log` warns about once a second language other than English is configured), or — field
+files split compliant
 texts across the two parts — when the **trimmed full description** equals it (consumed whole,
 the translation stands alone). Partial/substring matching was retired — a spliced phrase
 produced wrong sentences. Two modes, chosen in setup: **fill the gaps** (rows
@@ -550,17 +833,66 @@ objects ship unchecked instead of drowning `_Log` in false "not exported" errors
 **globally for every system and session** and recompute live; a row for an
 object not listed falls back to the plant family's defaults.
 
+**The mnemonic map** — the table that decides **what a mnemonic is and where it lands**, one rule
+set per plant type. Each rule is a **regex over the mnemonic** with named groups, plus the
+destination it resolves to: the **sheet** and **tag** (templates — `CABINET`, or
+`IL{firstLineId+line-1:00}_BELT` for shapes whose sheet is computed from a line digit and a
+workspace setting), the **word** (`auto` derives Alarm/Warning from an `(?<aw>AL|WR)` group and
+numbers it `ceil((bit+1)/32)`, or name one outright — `Alarm2`, `State`), and where the **index**
+and **bit** come from (`{i}`, a constant, or `map(Destination_Parameters,{i})` for an index the
+mnemonic does not carry). First enabled match wins, so a specific shape sits above the general one
+it would otherwise be swallowed by. The rule also names its **`_Offsets` object key**, so the
+per-object entry shift still applies exactly as before.
+
+Three things follow from the table being data. **Nothing is renamed**: the legacy tool rewrote
+`EMERGENCY02000` into `CABINETAL02000` — which worked only because both prefixes are nine
+characters, so the renamed string put its index and bit on the offsets the cabinet branch already
+read — and that cost the real identity, since the plant CSVs know the signal by its true name.
+A rule states the destination instead. **A destination may be empty**, meaning *recognized and
+deliberately not written*: the `EMERGENCY_ON`/`_RST` commands, and every member after the first of
+an AND/OR group (many digital inputs drive one diagnostic bit; the `_0` member carries it). And the
+table **is the filter** — "is this a diagnostic at all" is the same question as "does a rule claim
+it", so a shape no rule claims is skipped as quietly as the rest of the non-diagnostic mass. What
+replaces the old per-row length errors is a ratio: when the map claims almost nothing across a
+real sample, `_Log` warns that the plant type is probably wrong. A rule whose regex does not parse
+is **inert with a warning**, never fatal — one typo costs one shape, not the build.
+
+An index that comes from a CSV **requires that CSV**: a chute cannot be placed without
+`Destination_Parameters`, and an absent, empty or silent-about-this-key source is an error rather
+than a fallback to the mnemonic's own number, which would write to whatever row that number
+happened to hit.
+
 **Official-rules checks** — beyond the coherence legs, every build audits against the
 configuration-rules document and reports to `_Log` (findings only, capped, nothing queued):
-exported rows or IO mnemonics on **bit 31/63** (the last bit of a DWORD is forbidden, §3.3), the
-same description exported twice within a device block's alarm+warning sections (§3.3), an
+a **mnemonic landing on bit 31/63** (the last bit of a DWORD is forbidden, §3.3), the same
+**identity** exported twice within a device block *and category* (§3.3), an
 exported row whose **priority E** is empty, zero, non-numeric or stored as text — with a gentler
 note when it strays from the alarm=2/warning=3 convention (§3.1) — and **locations containing
-`-`** (§3.8), on the IO side and on block headers. The busfield leg accepts BOTH valid
-configurations: the modern type-11 layout (element/bit left 0, §3.7) and the deprecated
-element/bit/warning encoding, mismatching only when neither fits; it also wants **node 0** (the
-Profinet controller) present (§3.2) and every **AS-I master** carrying the ignore-error flag
-(warning-on-fault 2 or 3, §4.8).
+`-`** (§3.8), on the IO side and on block headers.
+
+Two of those read narrower than the rule text, because the wider reading produced findings nobody
+could act on. **Bit 31/63** is only reported where a mnemonic actually lands: an export tick sitting
+on the last bit of a DWORD is ignored by the plant and worth nothing to report, while a signal
+written there will never be seen. And the thing that must be unique is the **identity — functional
+unit + location + device + description — per block AND per category**, not the sentence: sixteen
+safety doors on one block all read "SAFETY DOOR OPEN" and are told apart by their device
+(`-B1`, `-B2`, …), and the same identity as an alarm and as a warning is a signal that was
+declassed from one to the other. Keying on the description alone reported fifteen non-duplicates
+per door block and one per declassed signal, which is how the real duplicates got lost.
+
+The busfield leg accepts BOTH valid
+configurations: the modern type-11 layout (§3.7 — reference index, element and bit all left 0, the
+linkage living in the type-11 BUS input) and the deprecated encoding where the busfield row carries
+element/bit/warning flag itself, mismatching only when neither fits. The **reference index** (the
+induction line, a ≥ 10 line mask, or the upstream system) is compared only on a row that carries a
+linkage at all: a modern row has no line to compare, and node + card already name the device on its
+controller's network — comparing it anyway reported every modern ISPC and upstream module as a
+missing node. A node the busfield comments out (`#`) or does not list is still missing. The
+columns are found by the header's own names — the older IODriver export has no *Linked Master ID* /
+*Linked Slave ID*, so reference index, element and bit sit two fields earlier — and only a file whose
+header does not name them is read at the current positions. The leg
+also wants **node 0** (the Profinet controller) present (§3.2) and every **AS-I master** carrying the
+ignore-error flag (warning-on-fault 2 or 3, §4.8).
 
 **The formula cleaner** (the Cleanup VBA, absorbed): every build checks EVERY `#`-marked
 diagnostic sheet — STROBE included, targeted or not — for the structural damage hand edits leave
@@ -573,13 +905,35 @@ no FUnit or Location (SORTERSTATE, TRAIN, …) is healthy with those columns emp
 no noise. Intact shared formulas are never touched — a repair whose
 cell healed in the meantime conflicts as moot. Optionally, setup takes a **reference SWP**: the
 target's formula structure is audited against the base's canonical block (sheets map by name or
-by suffix, rows fold by block length) and `_Log` reports columns whose formulas were lost and
-CONFIG_PLANT references pointing at the wrong template row — findings only, capped per sheet.
+by suffix) and `_Log` reports columns whose formulas were lost and CONFIG_PLANT references
+pointing at the wrong template row — findings only, capped per sheet. One exemption: **column L
+(the T.S. reference) is not audited for formula loss on a cabinet table** (sheet parameter B4 =
+`DB_CABINETS_DIAG`). The cards there are assigned by hand while the reference file happens to
+carry a formula, so every hand-filled row read as damage. It is one column on one table family —
+a lost Q, R, H or I formula on a cabinet is still reported.
+
+A **block** is one physical unit of 5 DWords — State, Alarm1, Alarm2, Warning1, Warning2 — so 160
+bit rows sharing a single header (the sorter's blocks measure 166 rows: the header plus 5 × (1 +
+32)). A row folds onto the base by its **distance from its own header**, which the reader already
+resolved for every row; no block-length constant is involved, so blocks of unequal length audit
+correctly. Inside a block a same-sheet reference is never an absolute address — it names either
+**the row itself** (T / U, the description cells) or **the row's block header** (F in Q / R, C in
+S, and H / I) — and both anchors are collapsed before comparing. The reference SWP holds one block
+per element near the top of the sheet while the target holds many, so the same structural formula
+reads `F15` there and `F181` here and the two compare EQUAL; a reference to any **other** row
+survives normalization and stays a finding, which is exactly the dragged-formula damage the audit
+exists to catch. Normalization is token-aware: an external target such as `[1]DB_CHUTE!$L$47` and
+quoted text such as `"AL14"` are never mistaken for a local cell, whatever the row number is.
 
 **The queue** (`_Queue`) is diff-driven: every build recomputes the intended writes and reconciles
 them into the standing actions — include choices (☑/☐, double-click) and the first-seen old value
 survive, satisfied intents retire as *AppliedExternally*, vanished ones drop, moved files re-base
-with the evidence in the note. Everything persists in `swp-bridge.json` at the SWP root (atomic,
+with the evidence in the note. In append mode a row's **device blank and the label writes it
+depends on** (T / U, and the Q / R extension that displays them) form one **FLD group** — the
+`Group` column reads `FLD` — and they toggle together and apply together, never half of a decision:
+a blank J next to an un-appended label is the device existing nowhere. A group split outside the
+gesture (a hand-edited sidecar, a member stuck in conflict) is held back from Apply and counted in
+the confirmation. Everything persists in `swp-bridge.json` at the SWP root (atomic,
 `.bak`), one file per system, surviving every version-folder hop.
 
 **Double-clickable cells wear a blue border** everywhere: on the Workspace sheet,
@@ -608,7 +962,11 @@ the current phase, per-sheet tallies (activate a row to filter the Workspace she
 with jump links, and a `SwpBridge_Log.txt` lands next to the SWP on apply.
 
 **Apply** — headless, never through Excel: per-action **three-way check** (the cell must still hold
-the value the diff saw, else that action flags Conflict and the rest proceed), then the affected
+the value the diff saw, else that action flags Conflict and the rest proceed); a cell that is a
+**shared formula** refuses any write, whatever the column (a literal over the shared master would
+orphan its dependents and Excel would repair the file on open); two actions on one cell let only the
+first through; an FLD group with a conflicted member holds its other members back, noted on each.
+Then the affected
 sheets are stream-rewritten in the file bytes (a 35 MB CHUTE sheet never becomes a DOM; untouched
 sheets are not rewritten at all). Writing `X` (the rules-§3.1 format; existing lowercase `x`
 never churns) over the Export template formula converts it to a literal; missing cells are inserted in column order; the edit stamp lands in AA; the calculation
@@ -619,6 +977,17 @@ with `.bak`. Two modes, chosen in setup: **in place**, or **version folder** —
 folder-relative, so it keeps resolving), and the COPY patched; the original is never written.
 Statuses flip only after the disk write returns, and the workspace rebuilds to show the new
 reality. The Cell-class SWP workbooks (`CELL_1`, `DIGITAL_ANTENNA_1`) are out of scope.
+
+**Copy along.** Beside *new dated version folder* sits one regex — *…and copy along the files
+matching* — tested case-insensitively against the file names of the current version folder. When
+Apply creates the next folder, every match is copied into it next to the patched SWP and
+CONFIG_PLANT, so the new folder is a complete version: with one IO list driving two SWPs,
+`^SWP_02_Induction_generated_G1\.xlsx$` in the G2 session brings G1 along — and the G1 session,
+reopened, follows it there. Top-level files only; Excel's `~$` lock files and `.bak` copies never,
+and the SWP and CONFIG_PLANT are never copied twice. The apply message and `_Log` name every file
+copied and every one that could not be — a failed copy is reported, never fatal, since the patched
+SWP is what the apply exists for. A pattern that does not parse is refused in setup and copies
+nothing if it reaches an apply.
 
 To remove the whole feature: delete `src/ExcelPowerTools/IoPipeline/SwpBridge`,
 `src/ExcelPowerTools.Core/IoPipeline/SwpBridge`, `tests/ExcelPowerTools.Tests/IoPipeline/SwpBridge`,

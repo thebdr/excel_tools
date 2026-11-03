@@ -50,11 +50,15 @@ namespace ExcelPowerTools
         <group id='ptCompare' label='Compare &amp; review'>
           <splitButton id='ptCompareSplit' size='large'>
             <button id='ptComparePrimary' label='Compare revisions' image='ptCompareIcon' onAction='OnCompareRevisions'
-                    screentip='Build a multi-revision comparison project'
-                    supertip='Choose every available revision, correct the inferred order and parent links, then build an integrity-checked Review workbook with aligned logical changes and history.'/>
+                    screentip='Align and compare complete workbook revisions'
+                    supertip='Compare stored values, saved calculated values, and formulas. Power Tools aligns sheets and inserted or deleted rows and columns across the revision history; identical tables are supported. Styles, comments, drawings, and package metadata are not comparison changes; they are used only for safe reading and integrity checks.'/>
             <menu id='ptCompareMenu' label='Compare revisions' itemSize='large'>
-              <button id='ptCompareProjectMenu' label='New comparison project...' image='ptCompareIcon' onAction='OnCompareRevisions'
-                      screentip='Compare two to twenty revisions with editable lineage and conservative alignment'/>
+              <button id='ptCompareProjectMenu' label='New aligned comparison...' image='ptCompareIcon' onAction='OnCompareRevisions'
+                      screentip='Compare complete revision history with row and column alignment'/>
+              <button id='ptCompareTableMenu' label='Keyed table comparison...' image='ptCompareIcon' onAction='OnCompareTableRevisions'
+                      screentip='Compare explicitly keyed rows in matching table schemas'/>
+              <button id='ptApplyTableMenu' label='Apply selected comparison changes...' image='ptCompareIcon' onAction='OnApplyTableRevisionChanges'
+                      screentip='Copy selected changed cells and added rows into a new verified workbook'/>
               <button id='ptCompareFilesMenu' label='Exact two-file preview...' image='ptCompareIcon' onAction='OnCompareFiles'
                       screentip='Generate a positional exact pairwise Review workbook'/>
               <button id='ptOpenReviewMenu' label='Review workbook in Hub...' imageMso='FileOpen' onAction='OnOpenReview'
@@ -233,6 +237,8 @@ namespace ExcelPowerTools
         public void OnSaveCsv(IRibbonControl control) => CsvCommands.SaveCsv();
         public void OnSaveAllCsv(IRibbonControl control) => CsvCommands.SaveAllCsv();
         public void OnCsvIndex(IRibbonControl control) => CsvCommands.ShowIndex();
+        public void OnCompareTableRevisions(IRibbonControl control) => RevisionComparisonCommands.StartComparison();
+        public void OnApplyTableRevisionChanges(IRibbonControl control) => RevisionComparisonCommands.ApplySelected();
         public void OnCompareRevisions(IRibbonControl control) => ComparisonProjectCommands.StartComparisonProject();
         public void OnCompareFiles(IRibbonControl control) => ComparisonCommands.StartExactPreview();
         public void OnOpenReview(IRibbonControl control) => PowerToolsPaneManager.OpenComparisonReviewPicker();

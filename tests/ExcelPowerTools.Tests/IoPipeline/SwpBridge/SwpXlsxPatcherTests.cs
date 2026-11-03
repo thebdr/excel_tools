@@ -115,6 +115,8 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
                             Number("D18", 1),
                             Inline("G18", "80.3.1"),
                             SharedStrFormula("H18", "=S1"),
+                            Inline("J18", "-F1"),
+                            SharedStrFormula("L18", "TS_SHARED"),
                             SharedStrFormula("Q18", "shared cached"),
                             Inline("T18", "OLD TEXT")) { RowIndex = 18 }),
                     new PageMargins { Left = 0.7, Right = 0.7, Top = 0.75, Bottom = 0.75, Header = 0.3, Footer = 0.3 });
@@ -183,6 +185,36 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             Assert.EndsWith("&\" \"&T17", row.FormulaQ);
             Assert.Equal("CABINET =S1+X - AL00 NEW DESC ", row.CachedQ);  // cache uses the NEW T
             Assert.Equal(Stamp, row.StampAA);
+        }
+
+        [Fact]
+        public void A_rebuilt_formula_caches_the_truncated_text_and_keeps_its_future_function_name()
+        {
+            // The rebuild cuts the template's trailing text off, so the cache is head + " - " +
+            // the NEW T — not the whole displayed text with the description tacked on.
+            string rebuilt = SwpDescriptionFormula.Build(
+                Parse("SUBSTITUTE([1]DB_TEST!$K$57&T17,\"%1\",F15)"), "T17");
+            var actions = new[]
+            {
+                Action(SwpField.Desc1T, "AL00", "NEW DESC"),
+                Action(SwpField.FormulaQ, "SUBSTITUTE([1]DB_TEST!$K$57&T17,\"%1\",F15)", rebuilt),
+            };
+
+            var result = SwpXlsxPatcher.Apply(BuildWorkbook(), actions, Stamp, new List<SwpLogEntry>());
+
+            SwpRowSnapshot row = ReRead(result.PatchedBytes, "DB_TEST_DIAG.Alarm1>0>0");
+            Assert.Equal("CABINET =S1+X - NEW DESC", row.CachedQ);
+
+            // The _xlfn. prefix must survive into the file verbatim: without it Excel reads the
+            // formula as an unknown user-defined function and the cell shows #NAME?.
+            Assert.Equal(rebuilt, row.FormulaQ);
+            Assert.StartsWith("_xlfn.LET(", row.FormulaQ);
+        }
+
+        private static SwpDescriptionFormula.Parsed Parse(string formula)
+        {
+            Assert.True(SwpDescriptionFormula.TryParse(formula, out SwpDescriptionFormula.Parsed parsed));
+            return parsed;
         }
 
         [Fact]
@@ -363,6 +395,103 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             var result = SwpXlsxPatcher.Apply(BuildWorkbook(), new[] { action }, Stamp, new List<SwpLogEntry>());
             Assert.Equal(SwpActionStatus.Conflict, result.Outcomes[0].Result);
             Assert.Contains("header not found", result.Outcomes[0].Note);
+        }
+
+        // ---- the FLD group, shared cells and duplicate writes ------------------------------------
+
+        private const string Bit1 = "DB_TEST_DIAG.Alarm1>0>1";
+        private const string Bit1Group = "CABINET|" + Bit1;
+
+        private static SwpAction Grouped(SwpField field, string oldValue, string newValue)
+        {
+            SwpAction action = Action(field, oldValue, newValue, Bit1);
+            action.FldGroup = Bit1Group;
+            return action;
+        }
+
+        [Fact]
+        public void An_fld_group_applies_together_or_not_at_all()
+        {
+            // The device blank's base matches, the label write's does not (someone edited T):
+            // applied alone, the blank would leave the device existing nowhere.
+            var actions = new[]
+            {
+                Grouped(SwpField.DeviceJ, "-F1", ""),
+                Grouped(SwpField.Desc1T, "STALE BASE", "OLD TEXT =S1+X-F1"),
+                Action(SwpField.AddressG, "80.3.1", "80.3.2", Bit1),   // the row's independent write
+            };
+
+            var result = SwpXlsxPatcher.Apply(BuildWorkbook(), actions, Stamp, new List<SwpLogEntry>());
+
+            Assert.Equal(SwpActionStatus.Conflict, result.Outcomes[0].Result);
+            Assert.Contains("held back", result.Outcomes[0].Note);
+            Assert.Equal(SwpActionStatus.Conflict, result.Outcomes[1].Result);
+            Assert.Contains("STALE BASE", result.Outcomes[1].Note + result.Outcomes[1].Action.OldValue);
+            Assert.Equal(SwpActionStatus.Applied, result.Outcomes[2].Result);
+            Assert.Equal(1, result.AppliedCount);
+
+            SwpRowSnapshot row = ReRead(result.PatchedBytes, Bit1);
+            Assert.Equal("-F1", row.DeviceJ);        // the device is still there
+            Assert.Equal("OLD TEXT", row.Desc1T);
+            Assert.Equal("80.3.2", row.AddressG);
+        }
+
+        [Fact]
+        public void A_whole_group_with_nothing_else_to_apply_yields_no_bytes()
+        {
+            var actions = new[]
+            {
+                Grouped(SwpField.DeviceJ, "-F1", ""),
+                Grouped(SwpField.Desc1T, "STALE BASE", "X"),
+            };
+            var result = SwpXlsxPatcher.Apply(BuildWorkbook(), actions, Stamp, new List<SwpLogEntry>());
+            Assert.Equal(0, result.AppliedCount);
+            Assert.Null(result.PatchedBytes);
+        }
+
+        [Fact]
+        public void An_intact_group_applies_whole()
+        {
+            var actions = new[]
+            {
+                Grouped(SwpField.DeviceJ, "-F1", ""),
+                Grouped(SwpField.Desc1T, "OLD TEXT", "OLD TEXT =S1+X-F1"),
+            };
+            var result = SwpXlsxPatcher.Apply(BuildWorkbook(), actions, Stamp, new List<SwpLogEntry>());
+            Assert.Equal(2, result.AppliedCount);
+            SwpRowSnapshot row = ReRead(result.PatchedBytes, Bit1);
+            Assert.Equal("", row.DeviceJ);
+            Assert.Equal("OLD TEXT =S1+X-F1", row.Desc1T);
+        }
+
+        [Fact]
+        public void A_shared_formula_cell_refuses_a_literal_in_any_column()
+        {
+            // SharedMask, wired: L18 is a shared-formula member in a column the old guard never
+            // looked at — a literal over it conflicts instead of orphaning the master's dependents.
+            var result = SwpXlsxPatcher.Apply(BuildWorkbook(),
+                new[] { Action(SwpField.TsRefL, "TS_SHARED", "TS_001", Bit1) }, Stamp, new List<SwpLogEntry>());
+
+            Assert.Equal(SwpActionStatus.Conflict, result.Outcomes[0].Result);
+            Assert.Contains("shared formula", result.Outcomes[0].Note);
+            Assert.Contains("not editable", result.Outcomes[0].Note);
+            Assert.Null(result.PatchedBytes);
+        }
+
+        [Fact]
+        public void Two_actions_on_one_cell_let_only_the_first_through()
+        {
+            var actions = new[]
+            {
+                Action(SwpField.Desc1T, "AL00", "FIRST"),
+                Action(SwpField.Desc1T, "AL00", "SECOND"),
+            };
+            var result = SwpXlsxPatcher.Apply(BuildWorkbook(), actions, Stamp, new List<SwpLogEntry>());
+
+            Assert.Equal(SwpActionStatus.Applied, result.Outcomes[0].Result);
+            Assert.Equal(SwpActionStatus.Conflict, result.Outcomes[1].Result);
+            Assert.Contains("same cell", result.Outcomes[1].Note);
+            Assert.Equal("FIRST", ReRead(result.PatchedBytes, "DB_TEST_DIAG.Alarm1>0>0").Desc1T);
         }
 
         // ---- the real FVZ sorter file, fully in memory (nothing on disk is touched) ---------

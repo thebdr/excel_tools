@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using ExcelPowerTools.Core.Comparison.Alignment;
 using ExcelPowerTools.Core.Comparison.Canonical;
+using ExcelPowerTools.Core.Comparison.Diff;
 using ExcelPowerTools.Core.Comparison.History;
 using ExcelPowerTools.Core.Comparison.Persistence;
 using Xunit;
@@ -48,7 +49,7 @@ namespace ExcelPowerTools.Tests.Comparison
 
             Assert.Equal("project-history-review", state.ProjectId);
             Assert.Equal("{\"schema\":\"logical-history-v1\"}", state.StateJson);
-            Assert.Equal(3, state.ChangeRows.Count);
+            Assert.Equal(4, state.ChangeRows.Count);
 
             ReviewChangeProjectionRow reverted = Assert.Single(state.ChangeRows, row => row.Address == "A1");
             Assert.Equal("Value", reverted.Aspect);
@@ -65,15 +66,87 @@ namespace ExcelPowerTools.Tests.Comparison
             Assert.Equal("Conflict; Branch-only", changed.Flags);
             Assert.Equal("Confirmed", changed.AlignmentConfidence);
 
-            ReviewChangeProjectionRow formula = Assert.Single(state.ChangeRows, row => row.Address == "B1");
+            ReviewChangeProjectionRow calculated = Assert.Single(state.ChangeRows, row =>
+                row.Address == "B1" && row.Aspect == "Calculated value");
+            Assert.Equal("2", calculated.BeforeText);
+            Assert.Equal("4", calculated.AfterText);
+
+            ReviewChangeProjectionRow formula = Assert.Single(state.ChangeRows, row =>
+                row.Address == "B1" && row.Aspect == "Formula");
             Assert.Equal("Formula", formula.Aspect);
             Assert.Equal("=1+1", formula.BeforeText);
             Assert.Equal("=1+3", formula.AfterText);
 
-            // A changed primary value is a better representative character detail than a reverted endpoint or
-            // a formula/cached-result secondary candidate.
+            // A changed stored value is the preferred detail before calculated-value and formula channels.
             Assert.Equal("old", state.DetailBefore);
             Assert.Equal("master", state.DetailAfter);
+        }
+
+        [Fact]
+        public void Formula_text_and_metadata_changes_collapse_into_one_visible_formula_row()
+        {
+            LogicalHistoryResult history = LogicalHistoryEngine.Build(
+                "project-formula-channel",
+                "mapping-formula-channel",
+                new[]
+                {
+                    Revision("r1", "", 0, true, false,
+                        FormulaWithMetadata("B2", "=A2*2", 4, "type=normal;ref=B2")),
+                    Revision("r2", "r1", 1, false, true,
+                        FormulaWithMetadata("B2", "=A2*3", 4, "type=array;ref=B2:B4")),
+                });
+
+            Assert.Equal(
+                new[] { CellChangeAspect.Formula, CellChangeAspect.FormulaStructure },
+                history.Subjects.Select(item => item.Aspect));
+
+            ReviewWorkbookState state = ReviewHistoryProjector.Project(
+                history,
+                "{}",
+                new[]
+                {
+                    RevisionDisplay("r1", 0, "", "r1.xlsx"),
+                    RevisionDisplay("r2", 1, "r1", "r2.xlsx"),
+                },
+                new[] { Display("B2", "Data", "B2", AlignmentConfidence.Strong) });
+
+            ReviewChangeProjectionRow row = Assert.Single(state.ChangeRows);
+            Assert.Equal("Formula", row.Aspect);
+            Assert.Equal("=A2*2", row.BeforeText);
+            Assert.Equal("=A2*3", row.AfterText);
+            Assert.DoesNotContain(state.ChangeRows, item => item.Aspect == "Formula metadata");
+        }
+
+        [Fact]
+        public void Metadata_only_formula_change_is_one_visible_formula_row()
+        {
+            LogicalHistoryResult history = LogicalHistoryEngine.Build(
+                "project-formula-metadata-channel",
+                "mapping-formula-metadata-channel",
+                new[]
+                {
+                    Revision("r1", "", 0, true, false,
+                        FormulaWithMetadata("B2", "=A2*2", 4, "type=normal;ref=B2")),
+                    Revision("r2", "r1", 1, false, true,
+                        FormulaWithMetadata("B2", "=A2*2", 4, "type=array;ref=B2:B4")),
+                });
+
+            Assert.Equal(CellChangeAspect.FormulaStructure, Assert.Single(history.Subjects).Aspect);
+
+            ReviewWorkbookState state = ReviewHistoryProjector.Project(
+                history,
+                "{}",
+                new[]
+                {
+                    RevisionDisplay("r1", 0, "", "r1.xlsx"),
+                    RevisionDisplay("r2", 1, "r1", "r2.xlsx"),
+                },
+                new[] { Display("B2", "Data", "B2", AlignmentConfidence.Strong) });
+
+            ReviewChangeProjectionRow row = Assert.Single(state.ChangeRows);
+            Assert.Equal("Formula", row.Aspect);
+            Assert.Equal("type=normal;ref=B2", row.BeforeText);
+            Assert.Equal("type=array;ref=B2:B4", row.AfterText);
         }
 
         [Fact]
@@ -279,5 +352,16 @@ namespace ExcelPowerTools.Tests.Comparison
 
         private static CanonicalCellState Formula(string key, string formula, double cached) =>
             CanonicalCellState.Formula(key, formula, CanonicalValue.Number(cached));
+
+        private static CanonicalCellState FormulaWithMetadata(
+            string key,
+            string formula,
+            double cached,
+            string metadata) =>
+            CanonicalCellState.Formula(
+                key,
+                formula,
+                CanonicalValue.Number(cached),
+                exactFormulaMetadata: metadata);
     }
 }

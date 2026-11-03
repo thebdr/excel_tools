@@ -21,6 +21,13 @@ namespace ExcelPowerTools.Core.Comparison.Alignment
     /// </summary>
     public static class TabularAlignmentEngine
     {
+        // Exact sequence alignment is deliberately bounded. Useful ranges can contain up to 100,000 rows, so an
+        // unconstrained quadratic LCS would be unsafe inside Excel. Gaps above this budget remain explicit
+        // ambiguities instead of being guessed.
+        private const long MaxExactSequenceMatrixCells = 8000000L;
+        private const double MinimumBlankHeaderColumnSimilarity = 0.90D;
+        private const double MinimumBlankHeaderCandidateMargin = 0.05D;
+
         public static AxisAlignmentResult AlignRows(
             AlignmentTable before,
             AlignmentTable after,
@@ -90,13 +97,15 @@ namespace ExcelPowerTools.Core.Comparison.Alignment
                 if ((column & 0x1F) == 0) cancellationToken.ThrowIfCancellationRequested();
                 afterTokens.Add(column, AlignmentText.ExactColumnFingerprint(after, column, afterStart));
             }
-            return AlignExactTokens(
+            return AlignSequenceTokens(
                 beforeTokens,
                 afterTokens,
                 AxisAlignmentStrategy.UniqueContentAnchors,
                 AlignmentConfidence.Strong,
                 "column.exact-content-anchor",
                 "A unique exact column-content fingerprint matched across revisions.",
+                "axis.duplicate-content-ambiguity",
+                "Competing non-monotonic exact column evidence cannot be paired without changing identity.",
                 cancellationToken);
         }
 
@@ -190,52 +199,26 @@ namespace ExcelPowerTools.Core.Comparison.Alignment
                 afterTokens.Add(row, AlignmentText.ExactRowFingerprint(after, row));
             }
 
-            OccurrenceSet occurrences = BuildOccurrences(beforeTokens, afterTokens, cancellationToken);
             var pairs = new List<IndexPair>();
             var ambiguities = new List<AxisAlignmentAmbiguity>();
             var consumedBefore = new HashSet<int>();
             var consumedAfter = new HashSet<int>();
+            bool usedRepeatedSequence = ResolveMonotonicExactTokens(
+                beforeTokens,
+                afterTokens,
+                AxisAlignmentStrategy.UniqueContentAnchors,
+                AlignmentConfidence.Strong,
+                "row.unique-content-anchor",
+                "An exact row fingerprint was paired in deterministic monotonic sequence order.",
+                "row.duplicate-content-ambiguity",
+                "Competing non-monotonic exact row evidence cannot be paired without changing row identity.",
+                pairs,
+                ambiguities,
+                consumedBefore,
+                consumedAfter,
+                cancellationToken);
 
-            foreach (string token in occurrences.AllTokens)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                List<int> beforeIndices = occurrences.Before[token];
-                List<int> afterIndices = occurrences.After[token];
-                if (beforeIndices.Count == 1 && afterIndices.Count == 1)
-                {
-                    pairs.Add(new IndexPair(
-                        beforeIndices[0],
-                        afterIndices[0],
-                        AlignmentConfidence.Strong,
-                        AxisAlignmentStrategy.UniqueContentAnchors,
-                        new[]
-                        {
-                            new AlignmentReason(
-                                "row.unique-content-anchor",
-                                "A row fingerprint occurs exactly once in each revision."),
-                        }));
-                    consumedBefore.Add(beforeIndices[0]);
-                    consumedAfter.Add(afterIndices[0]);
-                }
-                else if (beforeIndices.Count > 0 && afterIndices.Count > 0 &&
-                         (beforeIndices.Count > 1 || afterIndices.Count > 1))
-                {
-                    ambiguities.Add(new AxisAlignmentAmbiguity(
-                        beforeIndices,
-                        afterIndices,
-                        EvidenceToken(token),
-                        new[]
-                        {
-                            new AlignmentReason(
-                                "row.duplicate-content-ambiguity",
-                                "The same exact row content occurs multiple times; occurrence identity is unresolved."),
-                        }));
-                    foreach (int index in beforeIndices) consumedBefore.Add(index);
-                    foreach (int index in afterIndices) consumedAfter.Add(index);
-                }
-            }
-
-            // Unique exact pairs may include moves. Only a monotonic subset is safe as two-sided sequence bounds.
+            // Exact pairs may include unique moves. Only their monotonic subset is safe as two-sided sequence bounds.
             IReadOnlyList<IndexPair> monotonicAnchors = LongestMonotonicSubset(pairs, cancellationToken);
             bool usedNeighborBounds = PairBoundedGaps(
                 before,
@@ -296,6 +279,10 @@ namespace ExcelPowerTools.Core.Comparison.Alignment
                     "row.sequence-fallback",
                     "No strong/confirmed key was supplied; exact content anchors and bounded sequence evidence were used."),
             };
+            if (usedRepeatedSequence)
+                reasons.Add(new AlignmentReason(
+                    "row.repeated-exact-sequence",
+                    "Repeated exact rows were paired monotonically; surplus occurrences remain explicit insertions or deletions."));
             if (ambiguities.Count > 0)
                 reasons.Add(new AlignmentReason(
                     "row.ambiguities-retained",
@@ -314,29 +301,555 @@ namespace ExcelPowerTools.Core.Comparison.Alignment
             int afterRow = afterHeader.AcceptedHeaderRowIndex.Value;
             var beforeTokens = new Dictionary<int, string>();
             var afterTokens = new Dictionary<int, string>();
+            var beforeBlankHeaders = new HashSet<int>();
+            var afterBlankHeaders = new HashSet<int>();
             for (int column = 0; column < before.ColumnCount; column++)
             {
                 if ((column & 0x3F) == 0) cancellationToken.ThrowIfCancellationRequested();
                 before.TryGetCell(beforeRow, column, out string value);
                 string normalized = AlignmentText.NormalizeLabel(value);
-                beforeTokens.Add(column, normalized.Length == 0 ? "\u0001blank-before:" + column : normalized);
+                if (normalized.Length == 0) beforeBlankHeaders.Add(column);
+                beforeTokens.Add(column, ColumnSequenceToken(
+                    before,
+                    column,
+                    beforeHeader.DataStartRowIndex,
+                    normalized));
             }
             for (int column = 0; column < after.ColumnCount; column++)
             {
                 if ((column & 0x3F) == 0) cancellationToken.ThrowIfCancellationRequested();
                 after.TryGetCell(afterRow, column, out string value);
                 string normalized = AlignmentText.NormalizeLabel(value);
-                afterTokens.Add(column, normalized.Length == 0 ? "\u0001blank-after:" + column : normalized);
+                if (normalized.Length == 0) afterBlankHeaders.Add(column);
+                afterTokens.Add(column, ColumnSequenceToken(
+                    after,
+                    column,
+                    afterHeader.DataStartRowIndex,
+                    normalized));
             }
 
-            return AlignExactTokens(
+            AxisAlignmentResult exact = AlignSequenceTokens(
                 beforeTokens,
                 afterTokens,
                 AxisAlignmentStrategy.HeaderLabels,
                 AlignmentConfidence.Strong,
                 "column.unique-header-label",
-                "A normalized header label occurs exactly once in each revision.",
+                "An exact normalized header or blank-header content fingerprint was paired monotonically.",
+                "column.duplicate-header-ambiguity",
+                "Competing non-monotonic header evidence cannot be paired without changing column identity.",
                 cancellationToken);
+            exact = PreserveNamedHeaderAmbiguities(
+                beforeTokens,
+                afterTokens,
+                exact,
+                cancellationToken);
+            return PairSimilarBlankHeaderColumns(
+                before,
+                after,
+                beforeHeader.DataStartRowIndex,
+                afterHeader.DataStartRowIndex,
+                beforeBlankHeaders,
+                afterBlankHeaders,
+                exact,
+                cancellationToken);
+        }
+
+        private static AxisAlignmentResult PreserveNamedHeaderAmbiguities(
+            IReadOnlyDictionary<int, string> beforeTokens,
+            IReadOnlyDictionary<int, string> afterTokens,
+            AxisAlignmentResult source,
+            CancellationToken cancellationToken)
+        {
+            OccurrenceSet occurrences = BuildOccurrences(beforeTokens, afterTokens, cancellationToken);
+            List<string> duplicateNamedHeaders = occurrences.AllTokens.Where(token =>
+                    token.StartsWith("\u0002header:", StringComparison.Ordinal) &&
+                    occurrences.Before[token].Count > 0 &&
+                    occurrences.After[token].Count > 0 &&
+                    (occurrences.Before[token].Count > 1 || occurrences.After[token].Count > 1))
+                .ToList();
+            if (duplicateNamedHeaders.Count == 0) return source;
+
+            var beforeBlocked = new HashSet<int>(duplicateNamedHeaders.SelectMany(token => occurrences.Before[token]));
+            var afterBlocked = new HashSet<int>(duplicateNamedHeaders.SelectMany(token => occurrences.After[token]));
+            var evidenceTokens = new HashSet<string>(
+                duplicateNamedHeaders.Select(EvidenceToken),
+                StringComparer.Ordinal);
+            List<AxisAlignmentLink> links = source.Links.Where(item =>
+                    !item.BeforeIndex.HasValue || !beforeBlocked.Contains(item.BeforeIndex.Value))
+                .Where(item => !item.AfterIndex.HasValue || !afterBlocked.Contains(item.AfterIndex.Value))
+                .ToList();
+            List<AxisAlignmentAmbiguity> ambiguities = source.Ambiguities
+                .Where(item => !evidenceTokens.Contains(item.EvidenceToken))
+                .ToList();
+            foreach (string token in duplicateNamedHeaders)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ambiguities.Add(new AxisAlignmentAmbiguity(
+                    occurrences.Before[token],
+                    occurrences.After[token],
+                    EvidenceToken(token),
+                    new[]
+                    {
+                        new AlignmentReason(
+                            "column.duplicate-header-ambiguity",
+                            "A repeated nonblank header label is not sufficient to identify changed columns by occurrence."),
+                    }));
+            }
+            SortLinks(links);
+            var reasons = new List<AlignmentReason>(source.Reasons)
+            {
+                new AlignmentReason(
+                    "column.named-duplicates-retained",
+                    "Repeated nonblank header labels remain unresolved unless an exact whole-table path proves identity."),
+            };
+            return new AxisAlignmentResult(source.Strategy, links, ambiguities, reasons);
+        }
+
+        private static string ColumnSequenceToken(
+            AlignmentTable table,
+            int column,
+            int dataStartRow,
+            string normalizedHeader)
+        {
+            if (!string.IsNullOrEmpty(normalizedHeader)) return "\u0002header:" + normalizedHeader;
+            string exactContent = AlignmentText.ExactColumnFingerprint(table, column, dataStartRow);
+            return "\u0001blank-content:" + StableId.Compute(
+                "alignment-blank-header-column-v1",
+                exactContent);
+        }
+
+        /// <summary>
+        /// Resolves exact axis tokens with global one-to-one anchors plus a bounded monotonic sequence pass for
+        /// repeated occurrences. Unlike key alignment, surplus repeated content is a structural insertion/deletion;
+        /// only competing cross-anchor or non-monotonic evidence remains ambiguous.
+        /// </summary>
+        private static AxisAlignmentResult AlignSequenceTokens(
+            IReadOnlyDictionary<int, string> beforeTokens,
+            IReadOnlyDictionary<int, string> afterTokens,
+            AxisAlignmentStrategy strategy,
+            AlignmentConfidence confidence,
+            string matchCode,
+            string matchMessage,
+            string ambiguityCode,
+            string ambiguityMessage,
+            CancellationToken cancellationToken)
+        {
+            var pairs = new List<IndexPair>();
+            var ambiguities = new List<AxisAlignmentAmbiguity>();
+            var consumedBefore = new HashSet<int>();
+            var consumedAfter = new HashSet<int>();
+            bool repeated = ResolveMonotonicExactTokens(
+                beforeTokens,
+                afterTokens,
+                strategy,
+                confidence,
+                matchCode,
+                matchMessage,
+                ambiguityCode,
+                ambiguityMessage,
+                pairs,
+                ambiguities,
+                consumedBefore,
+                consumedAfter,
+                cancellationToken);
+
+            var links = BuildMatchedLinks(pairs, cancellationToken);
+            foreach (int index in beforeTokens.Keys.OrderBy(value => value))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!consumedBefore.Contains(index))
+                    links.Add(OnlyBefore(index, strategy, "axis.only-before", "No monotonic exact evidence exists in After."));
+            }
+            foreach (int index in afterTokens.Keys.OrderBy(value => value))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!consumedAfter.Contains(index))
+                    links.Add(OnlyAfter(index, strategy, "axis.only-after", "No monotonic exact evidence exists in Before."));
+            }
+            SortLinks(links);
+
+            var reasons = new List<AlignmentReason>
+            {
+                new AlignmentReason(
+                    "axis.sequence-strategy",
+                    "Resolved exact evidence uses bounded monotonic sequence alignment; competing mappings remain explicit."),
+            };
+            if (repeated)
+                reasons.Add(new AlignmentReason(
+                    "axis.repeated-exact-sequence",
+                    "Repeated exact occurrences were paired in monotonic order and surplus occurrences stayed structural."));
+            return new AxisAlignmentResult(strategy, links, ambiguities, reasons);
+        }
+
+        private static bool ResolveMonotonicExactTokens(
+            IReadOnlyDictionary<int, string> beforeTokens,
+            IReadOnlyDictionary<int, string> afterTokens,
+            AxisAlignmentStrategy strategy,
+            AlignmentConfidence confidence,
+            string matchCode,
+            string matchMessage,
+            string ambiguityCode,
+            string ambiguityMessage,
+            List<IndexPair> pairs,
+            List<AxisAlignmentAmbiguity> ambiguities,
+            ISet<int> consumedBefore,
+            ISet<int> consumedAfter,
+            CancellationToken cancellationToken)
+        {
+            OccurrenceSet occurrences = BuildOccurrences(beforeTokens, afterTokens, cancellationToken);
+            var uniquePairs = new List<IndexPair>();
+            foreach (string token in occurrences.AllTokens)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                List<int> beforeIndices = occurrences.Before[token];
+                List<int> afterIndices = occurrences.After[token];
+                if (beforeIndices.Count != 1 || afterIndices.Count != 1) continue;
+                var pair = new IndexPair(
+                    beforeIndices[0],
+                    afterIndices[0],
+                    confidence,
+                    strategy,
+                    new[] { new AlignmentReason(matchCode, matchMessage) });
+                uniquePairs.Add(pair);
+                pairs.Add(pair);
+                consumedBefore.Add(pair.Before);
+                consumedAfter.Add(pair.After);
+            }
+
+            IReadOnlyList<IndexPair> anchors = LongestMonotonicSubset(uniquePairs, cancellationToken);
+            bool usedRepeated = false;
+            long remainingWork = MaxExactSequenceMatrixCells;
+            List<SequenceItem> orderedBefore = OrderedSequenceItems(beforeTokens, cancellationToken);
+            List<SequenceItem> orderedAfter = OrderedSequenceItems(afterTokens, cancellationToken);
+            int beforeCursor = 0;
+            int afterCursor = 0;
+            for (int gap = 0; gap <= anchors.Count; gap++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int beforeLast = gap == anchors.Count ? int.MaxValue : anchors[gap].Before - 1;
+                int afterLast = gap == anchors.Count ? int.MaxValue : anchors[gap].After - 1;
+                var beforeGap = new List<SequenceItem>();
+                while (beforeCursor < orderedBefore.Count && orderedBefore[beforeCursor].Index <= beforeLast)
+                {
+                    SequenceItem item = orderedBefore[beforeCursor++];
+                    if (!consumedBefore.Contains(item.Index)) beforeGap.Add(item);
+                }
+                var afterGap = new List<SequenceItem>();
+                while (afterCursor < orderedAfter.Count && orderedAfter[afterCursor].Index <= afterLast)
+                {
+                    SequenceItem item = orderedAfter[afterCursor++];
+                    if (!consumedAfter.Contains(item.Index)) afterGap.Add(item);
+                }
+                if (beforeGap.Count == 0 || afterGap.Count == 0) continue;
+
+                TryAlignExactSequence(
+                    beforeGap,
+                    afterGap,
+                    ref remainingWork,
+                    cancellationToken,
+                    out List<SequenceMatch> matches);
+
+                var crossingTokens = new HashSet<string>(StringComparer.Ordinal);
+                foreach (SequenceMatch match in matches)
+                {
+                    if (uniquePairs.Any(unique => Crosses(unique.Before, unique.After, match.Before, match.After)))
+                        crossingTokens.Add(match.Token);
+                }
+
+                HashSet<string> competing = CompetingSequenceTokens(
+                    beforeGap,
+                    afterGap,
+                    matches,
+                    crossingTokens,
+                    occurrences,
+                    cancellationToken);
+                foreach (string token in competing)
+                {
+                    AddSequenceAmbiguity(
+                        token,
+                        beforeGap.Where(item => string.Equals(item.Token, token, StringComparison.Ordinal))
+                            .Select(item => item.Index),
+                        afterGap.Where(item => string.Equals(item.Token, token, StringComparison.Ordinal))
+                            .Select(item => item.Index),
+                        ambiguityCode,
+                        ambiguityMessage,
+                        ambiguities,
+                        consumedBefore,
+                        consumedAfter);
+                }
+
+                foreach (SequenceMatch match in matches)
+                {
+                    if (competing.Contains(match.Token)) continue;
+                    pairs.Add(new IndexPair(
+                        match.Before,
+                        match.After,
+                        confidence,
+                        strategy,
+                        new[] { new AlignmentReason(matchCode, matchMessage) }));
+                    consumedBefore.Add(match.Before);
+                    consumedAfter.Add(match.After);
+                    if (occurrences.Before[match.Token].Count > 1 || occurrences.After[match.Token].Count > 1)
+                        usedRepeated = true;
+                }
+
+                // Common evidence skipped inside the same anchor-bounded gap represents a competing LCS path,
+                // a non-monotonic mapping, or an exhausted work budget.
+                foreach (string token in beforeGap.Select(item => item.Token)
+                             .Intersect(afterGap.Select(item => item.Token), StringComparer.Ordinal)
+                             .Distinct(StringComparer.Ordinal))
+                {
+                    List<int> beforeRemaining = beforeGap
+                        .Where(item => string.Equals(item.Token, token, StringComparison.Ordinal) &&
+                                       !consumedBefore.Contains(item.Index))
+                        .Select(item => item.Index)
+                        .ToList();
+                    List<int> afterRemaining = afterGap
+                        .Where(item => string.Equals(item.Token, token, StringComparison.Ordinal) &&
+                                       !consumedAfter.Contains(item.Index))
+                        .Select(item => item.Index)
+                        .ToList();
+                    if (beforeRemaining.Count == 0 || afterRemaining.Count == 0) continue;
+                    AddSequenceAmbiguity(
+                        token,
+                        beforeRemaining,
+                        afterRemaining,
+                        ambiguityCode,
+                        ambiguityMessage,
+                        ambiguities,
+                        consumedBefore,
+                        consumedAfter);
+                }
+            }
+
+            // A repeated token that survives on both sides only because its occurrences landed in different
+            // unique-anchor gaps crossed a proven anchor. Treating that as an unrelated delete + insert would
+            // silently choose an identity for a reordered duplicate group, so retain it as ambiguity.
+            foreach (string token in occurrences.AllTokens)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                List<int> beforeRemaining = occurrences.Before[token]
+                    .Where(index => !consumedBefore.Contains(index))
+                    .ToList();
+                List<int> afterRemaining = occurrences.After[token]
+                    .Where(index => !consumedAfter.Contains(index))
+                    .ToList();
+                if (beforeRemaining.Count == 0 || afterRemaining.Count == 0) continue;
+                AddSequenceAmbiguity(
+                    token,
+                    beforeRemaining,
+                    afterRemaining,
+                    ambiguityCode,
+                    ambiguityMessage,
+                    ambiguities,
+                    consumedBefore,
+                    consumedAfter);
+            }
+            return usedRepeated;
+        }
+
+        private static List<SequenceItem> OrderedSequenceItems(
+            IReadOnlyDictionary<int, string> tokens,
+            CancellationToken cancellationToken)
+        {
+            var result = new List<SequenceItem>();
+            foreach (KeyValuePair<int, string> pair in tokens.OrderBy(item => item.Key))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                result.Add(new SequenceItem(pair.Key, pair.Value));
+            }
+            return result;
+        }
+
+        private static HashSet<string> CompetingSequenceTokens(
+            IReadOnlyList<SequenceItem> before,
+            IReadOnlyList<SequenceItem> after,
+            IReadOnlyList<SequenceMatch> matches,
+            IEnumerable<string> rejectedTokens,
+            OccurrenceSet allOccurrences,
+            CancellationToken cancellationToken)
+        {
+            var beforeByToken = before.GroupBy(item => item.Token, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+            var afterByToken = after.GroupBy(item => item.Token, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+            var competing = new HashSet<string>(rejectedTokens ?? Array.Empty<string>(), StringComparer.Ordinal);
+            var matchedBefore = new HashSet<int>(matches
+                .Where(match => !competing.Contains(match.Token))
+                .Select(match => match.Before));
+            var matchedAfter = new HashSet<int>(matches
+                .Where(match => !competing.Contains(match.Token))
+                .Select(match => match.After));
+            foreach (string token in beforeByToken.Keys.Intersect(afterByToken.Keys, StringComparer.Ordinal))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (beforeByToken[token].Any(item => !matchedBefore.Contains(item.Index)) &&
+                    afterByToken[token].Any(item => !matchedAfter.Contains(item.Index)))
+                    competing.Add(token);
+            }
+
+            // If an alternate LCS can replace a matched repeated token with unresolved non-identical evidence,
+            // both token groups are competing. Expand that relation to a fixed point, but cap the examination so
+            // adversarial 100k-row inputs cannot turn ambiguity detection into another unbounded quadratic pass.
+            long checks = 0;
+            bool changed;
+            do
+            {
+                changed = false;
+                string[] unresolved = competing.ToArray();
+                foreach (SequenceMatch match in matches)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (competing.Contains(match.Token) ||
+                        allOccurrences.Before[match.Token].Count <= 1 &&
+                        allOccurrences.After[match.Token].Count <= 1)
+                        continue;
+                    foreach (string token in unresolved)
+                    {
+                        if (++checks > MaxExactSequenceMatrixCells)
+                        {
+                            foreach (SequenceMatch remaining in matches)
+                                if (allOccurrences.Before[remaining.Token].Count > 1 ||
+                                    allOccurrences.After[remaining.Token].Count > 1)
+                                    competing.Add(remaining.Token);
+                            return competing;
+                        }
+                        if (!beforeByToken.TryGetValue(token, out List<SequenceItem> beforeItems) ||
+                            !afterByToken.TryGetValue(token, out List<SequenceItem> afterItems))
+                            continue;
+                        int beforeMinimum = beforeItems[0].Index;
+                        int beforeMaximum = beforeItems[beforeItems.Count - 1].Index;
+                        int afterMinimum = afterItems[0].Index;
+                        int afterMaximum = afterItems[afterItems.Count - 1].Index;
+                        if (beforeMinimum < match.Before && afterMaximum > match.After ||
+                            beforeMaximum > match.Before && afterMinimum < match.After)
+                        {
+                            competing.Add(match.Token);
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            } while (changed);
+            return competing;
+        }
+
+        private static bool TryAlignExactSequence(
+            IReadOnlyList<SequenceItem> before,
+            IReadOnlyList<SequenceItem> after,
+            ref long remainingWork,
+            CancellationToken cancellationToken,
+            out List<SequenceMatch> matches)
+        {
+            matches = new List<SequenceMatch>();
+            int prefix = 0;
+            while (prefix < before.Count && prefix < after.Count &&
+                   string.Equals(before[prefix].Token, after[prefix].Token, StringComparison.Ordinal))
+            {
+                if ((prefix & 0x3F) == 0) cancellationToken.ThrowIfCancellationRequested();
+                matches.Add(new SequenceMatch(
+                    before[prefix].Index,
+                    after[prefix].Index,
+                    before[prefix].Token));
+                prefix++;
+            }
+
+            int beforeEnd = before.Count - 1;
+            int afterEnd = after.Count - 1;
+            var suffix = new List<SequenceMatch>();
+            while (beforeEnd >= prefix && afterEnd >= prefix &&
+                   string.Equals(before[beforeEnd].Token, after[afterEnd].Token, StringComparison.Ordinal))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                suffix.Add(new SequenceMatch(
+                    before[beforeEnd].Index,
+                    after[afterEnd].Index,
+                    before[beforeEnd].Token));
+                beforeEnd--;
+                afterEnd--;
+            }
+
+            int beforeLength = beforeEnd - prefix + 1;
+            int afterLength = afterEnd - prefix + 1;
+            if (beforeLength > 0 && afterLength > 0)
+            {
+                long cells = checked((long)(beforeLength + 1) * (afterLength + 1));
+                if (cells > remainingWork || cells > int.MaxValue)
+                {
+                    suffix.Reverse();
+                    matches.AddRange(suffix);
+                    return false;
+                }
+                remainingWork -= cells;
+                int stride = afterLength + 1;
+                var lengths = new int[(int)cells];
+                for (int left = beforeLength - 1; left >= 0; left--)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int row = left * stride;
+                    int next = (left + 1) * stride;
+                    for (int right = afterLength - 1; right >= 0; right--)
+                    {
+                        if ((right & 0xFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                        if (string.Equals(
+                                before[prefix + left].Token,
+                                after[prefix + right].Token,
+                                StringComparison.Ordinal))
+                            lengths[row + right] = lengths[next + right + 1] + 1;
+                        else
+                            lengths[row + right] = Math.Max(lengths[next + right], lengths[row + right + 1]);
+                    }
+                }
+
+                int beforeCursor = 0;
+                int afterCursor = 0;
+                while (beforeCursor < beforeLength && afterCursor < afterLength)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    SequenceItem left = before[prefix + beforeCursor];
+                    SequenceItem right = after[prefix + afterCursor];
+                    if (string.Equals(left.Token, right.Token, StringComparison.Ordinal))
+                    {
+                        matches.Add(new SequenceMatch(left.Index, right.Index, left.Token));
+                        beforeCursor++;
+                        afterCursor++;
+                        continue;
+                    }
+                    int down = lengths[(beforeCursor + 1) * stride + afterCursor];
+                    int across = lengths[beforeCursor * stride + afterCursor + 1];
+                    if (down > across) beforeCursor++;
+                    else afterCursor++;
+                }
+            }
+
+            suffix.Reverse();
+            matches.AddRange(suffix);
+            return true;
+        }
+
+        private static bool Crosses(int beforeA, int afterA, int beforeB, int afterB) =>
+            beforeA < beforeB && afterA > afterB || beforeA > beforeB && afterA < afterB;
+
+        private static void AddSequenceAmbiguity(
+            string token,
+            IEnumerable<int> beforeIndices,
+            IEnumerable<int> afterIndices,
+            string code,
+            string message,
+            ICollection<AxisAlignmentAmbiguity> ambiguities,
+            ISet<int> consumedBefore,
+            ISet<int> consumedAfter)
+        {
+            List<int> before = beforeIndices.Distinct().OrderBy(index => index).ToList();
+            List<int> after = afterIndices.Distinct().OrderBy(index => index).ToList();
+            if (before.Count == 0 || after.Count == 0) return;
+            ambiguities.Add(new AxisAlignmentAmbiguity(
+                before,
+                after,
+                EvidenceToken(token),
+                new[] { new AlignmentReason(code, message) }));
+            foreach (int index in before) consumedBefore.Add(index);
+            foreach (int index in after) consumedAfter.Add(index);
         }
 
         private static AxisAlignmentResult AlignExactTokens(
@@ -417,6 +930,191 @@ namespace ExcelPowerTools.Core.Comparison.Alignment
                         "axis.strategy",
                         "Resolved mappings use " + strategy + "; duplicate evidence remains explicit."),
                 });
+        }
+
+        private static AxisAlignmentResult PairSimilarBlankHeaderColumns(
+            AlignmentTable before,
+            AlignmentTable after,
+            int beforeDataStart,
+            int afterDataStart,
+            ISet<int> beforeBlankHeaders,
+            ISet<int> afterBlankHeaders,
+            AxisAlignmentResult source,
+            CancellationToken cancellationToken)
+        {
+            var links = new List<AxisAlignmentLink>(source.Links);
+            var ambiguousBefore = new HashSet<int>(source.Ambiguities.SelectMany(item => item.BeforeIndices));
+            var ambiguousAfter = new HashSet<int>(source.Ambiguities.SelectMany(item => item.AfterIndices));
+            var matchedBefore = new HashSet<int>(links
+                .Where(item => item.Kind == AxisAlignmentKind.Matched)
+                .Select(item => item.BeforeIndex.Value));
+            var matchedAfter = new HashSet<int>(links
+                .Where(item => item.Kind == AxisAlignmentKind.Matched)
+                .Select(item => item.AfterIndex.Value));
+            List<int> unresolvedBefore = beforeBlankHeaders
+                .Where(index => !matchedBefore.Contains(index) && !ambiguousBefore.Contains(index))
+                .OrderBy(index => index)
+                .ToList();
+            var unresolvedAfter = new HashSet<int>(afterBlankHeaders
+                .Where(index => !matchedAfter.Contains(index) && !ambiguousAfter.Contains(index)));
+            if (unresolvedBefore.Count == 0 || unresolvedAfter.Count == 0) return source;
+
+            var exactPairs = links
+                .Where(item => item.Kind == AxisAlignmentKind.Matched)
+                .Select(item => new IndexPair(
+                    item.BeforeIndex.Value,
+                    item.AfterIndex.Value,
+                    item.Confidence,
+                    item.Strategy,
+                    item.Reasons))
+                .ToList();
+            IReadOnlyList<IndexPair> anchors = LongestMonotonicSubset(exactPairs, cancellationToken);
+            var proposals = new List<BlankColumnCandidate>();
+            foreach (int beforeColumn in unresolvedBefore)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int interval = AnchorInterval(beforeColumn, anchors, true);
+                int leftBefore = interval == 0 ? -1 : anchors[interval - 1].Before;
+                int leftAfter = interval == 0 ? -1 : anchors[interval - 1].After;
+                int rightBefore = interval == anchors.Count ? before.ColumnCount : anchors[interval].Before;
+                int rightAfter = interval == anchors.Count ? after.ColumnCount : anchors[interval].After;
+                var positionalCandidates = new HashSet<int>
+                {
+                    leftAfter + (beforeColumn - leftBefore),
+                    rightAfter - (rightBefore - beforeColumn),
+                };
+                var viable = new List<BlankColumnCandidate>();
+                foreach (int afterColumn in positionalCandidates.OrderBy(index => index))
+                {
+                    if (!unresolvedAfter.Contains(afterColumn) || afterColumn <= leftAfter || afterColumn >= rightAfter)
+                        continue;
+                    double similarity = ColumnSimilarity(
+                        before,
+                        after,
+                        beforeColumn,
+                        afterColumn,
+                        beforeDataStart,
+                        afterDataStart,
+                        cancellationToken,
+                        out int beforeEvidence,
+                        out int afterEvidence);
+                    if (beforeEvidence == 0 || afterEvidence == 0 ||
+                        similarity < MinimumBlankHeaderColumnSimilarity)
+                        continue;
+                    viable.Add(new BlankColumnCandidate(beforeColumn, afterColumn, similarity));
+                }
+                viable.Sort((left, right) =>
+                {
+                    int similarity = right.Similarity.CompareTo(left.Similarity);
+                    return similarity != 0 ? similarity : left.After.CompareTo(right.After);
+                });
+                if (viable.Count == 0) continue;
+                if (viable.Count > 1 &&
+                    viable[0].Similarity - viable[1].Similarity < MinimumBlankHeaderCandidateMargin)
+                    continue;
+                proposals.Add(viable[0]);
+            }
+
+            HashSet<int> competingTargets = new HashSet<int>(proposals
+                .GroupBy(item => item.After)
+                .Where(group => group.Count() > 1)
+                .Select(group => group.Key));
+            List<BlankColumnCandidate> accepted = proposals
+                .Where(item => !competingTargets.Contains(item.After))
+                .OrderBy(item => item.Before)
+                .ToList();
+            int previousAfter = -1;
+            bool changed = false;
+            foreach (BlankColumnCandidate candidate in accepted)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (candidate.After <= previousAfter || exactPairs.Any(pair => Crosses(
+                        pair.Before,
+                        pair.After,
+                        candidate.Before,
+                        candidate.After)))
+                    continue;
+                previousAfter = candidate.After;
+                links.RemoveAll(item =>
+                    item.Kind == AxisAlignmentKind.OnlyBefore && item.BeforeIndex == candidate.Before ||
+                    item.Kind == AxisAlignmentKind.OnlyAfter && item.AfterIndex == candidate.After);
+                links.Add(new AxisAlignmentLink(
+                    candidate.Before,
+                    candidate.After,
+                    AxisAlignmentKind.Matched,
+                    AlignmentConfidence.Medium,
+                    AxisAlignmentStrategy.NeighborBoundedSequence,
+                    new[]
+                    {
+                        new AlignmentReason(
+                            "column.blank-header-neighbor-similarity",
+                            "Blank-header columns occupy the same monotonic neighbor-bounded position and have " +
+                            "at least 90% exact same-row cell similarity."),
+                    }));
+                changed = true;
+            }
+            if (!changed) return source;
+
+            SortLinks(links);
+            var reasons = new List<AlignmentReason>(source.Reasons)
+            {
+                new AlignmentReason(
+                    "column.blank-header-neighbor-bounded",
+                    "A uniquely positioned high-similarity blank-header column was aligned with Medium confidence."),
+            };
+            return new AxisAlignmentResult(source.Strategy, links, source.Ambiguities, reasons);
+        }
+
+        private static int AnchorInterval(
+            int index,
+            IReadOnlyList<IndexPair> anchors,
+            bool before)
+        {
+            int low = 0;
+            int high = anchors.Count;
+            while (low < high)
+            {
+                int middle = low + (high - low) / 2;
+                int value = before ? anchors[middle].Before : anchors[middle].After;
+                if (value < index) low = middle + 1;
+                else high = middle;
+            }
+            return low;
+        }
+
+        private static double ColumnSimilarity(
+            AlignmentTable before,
+            AlignmentTable after,
+            int beforeColumn,
+            int afterColumn,
+            int beforeStart,
+            int afterStart,
+            CancellationToken cancellationToken,
+            out int beforeEvidence,
+            out int afterEvidence)
+        {
+            int beforeHeight = Math.Max(0, before.RowCount - beforeStart);
+            int afterHeight = Math.Max(0, after.RowCount - afterStart);
+            int height = Math.Max(beforeHeight, afterHeight);
+            int equal = 0;
+            beforeEvidence = 0;
+            afterEvidence = 0;
+            for (int offset = 0; offset < height; offset++)
+            {
+                if ((offset & 0x3F) == 0) cancellationToken.ThrowIfCancellationRequested();
+                string beforeValue = null;
+                string afterValue = null;
+                bool beforePresent = offset < beforeHeight &&
+                                     before.TryGetCell(beforeStart + offset, beforeColumn, out beforeValue);
+                bool afterPresent = offset < afterHeight &&
+                                    after.TryGetCell(afterStart + offset, afterColumn, out afterValue);
+                if (beforePresent && !AlignmentText.IsBlank(beforeValue)) beforeEvidence++;
+                if (afterPresent && !AlignmentText.IsBlank(afterValue)) afterEvidence++;
+                if (beforePresent == afterPresent &&
+                    string.Equals(beforeValue, afterValue, StringComparison.Ordinal))
+                    equal++;
+            }
+            return height == 0 ? 1D : (double)equal / height;
         }
 
         private static bool PairBoundedGaps(
@@ -729,6 +1427,46 @@ namespace ExcelPowerTools.Core.Comparison.Alignment
                 throw new ArgumentOutOfRangeException(nameof(options.MaxNeighborBoundedGap));
             if (options.MinimumPositionalSimilarity < 0D || options.MinimumPositionalSimilarity > 1D)
                 throw new ArgumentOutOfRangeException(nameof(options.MinimumPositionalSimilarity));
+        }
+
+        private sealed class SequenceItem
+        {
+            internal SequenceItem(int index, string token)
+            {
+                Index = index;
+                Token = token ?? "";
+            }
+
+            internal int Index { get; }
+            internal string Token { get; }
+        }
+
+        private sealed class SequenceMatch
+        {
+            internal SequenceMatch(int before, int after, string token)
+            {
+                Before = before;
+                After = after;
+                Token = token ?? "";
+            }
+
+            internal int Before { get; }
+            internal int After { get; }
+            internal string Token { get; }
+        }
+
+        private sealed class BlankColumnCandidate
+        {
+            internal BlankColumnCandidate(int before, int after, double similarity)
+            {
+                Before = before;
+                After = after;
+                Similarity = similarity;
+            }
+
+            internal int Before { get; }
+            internal int After { get; }
+            internal double Similarity { get; }
         }
 
         private sealed class IndexPair

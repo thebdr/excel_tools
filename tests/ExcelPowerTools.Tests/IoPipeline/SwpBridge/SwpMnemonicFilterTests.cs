@@ -43,6 +43,60 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             Assert.Equal("80.3.1", e.SwpAddress());
         }
 
+        /// <summary>
+        /// SAFETY is the sorter's cabinet family and nothing else: the safety tooling writes its
+        /// mnemonic column in sorter syntax (the FVT list carries CABINETAL00000…00935), and a
+        /// CLASSDIAG shape — a sorter object with no sheet on a cabinet-only SWP — is not a
+        /// diagnostic there at all.
+        /// </summary>
+        [Fact]
+        public void Safety_takes_the_cabinet_shapes_and_leaves_classdiag_unclaimed()
+        {
+            var log = new List<SwpLogEntry>();
+            Assert.Equal("CABINETAL00800", Assert.Single(Run(Row("CABINETAL00800"), SwpPlantType.Safety, log)).Mnemonic);
+            Assert.Equal("CABINETWR00705", Assert.Single(Run(Row("CABINETWR00705"), SwpPlantType.Safety, log)).Mnemonic);
+            Assert.Equal("EMERGENCY00100", Assert.Single(Run(Row("EMERGENCY00100"), SwpPlantType.Safety, log)).Mnemonic);
+            Assert.Empty(Run(Row("EMERGENCY_ON"), SwpPlantType.Safety, log));            // a command, recognized and dropped
+            Assert.Empty(Run(Row("CLASSDIAGAL00620000705"), SwpPlantType.Safety, log));  // a chute: sorter only
+            Assert.Single(Run(Row("CLASSDIAGAL00620000705"), SwpPlantType.Msc, log));
+            Assert.Empty(log);
+        }
+
+        /// <summary>
+        /// The field gap of 2026-09-22: 454 CABINETAL rows in the FVT safety list, 70 in the
+        /// workspace — the 384 signal rows carry Siemens "I.byte.bit" addresses (no node) and
+        /// were dropped as unreadable. SAFETY reads them and hands the SWP the TIA form; every
+        /// other plant type keeps the error, because on a sorter list that shape is a missing bit.
+        /// </summary>
+        [Fact]
+        public void Safety_reads_siemens_plc_addresses_and_writes_the_tia_form()
+        {
+            var log = new List<SwpLogEntry>();
+            DiagnosticEntry fvt = Assert.Single(Run(Row("CABINETAL00104", address: "I.0.4"), SwpPlantType.Safety, log));
+            Assert.Equal("I0.4", fvt.PlcAddress);
+            Assert.Equal("I0.4", fvt.SwpAddress());
+            Assert.Equal("", fvt.Node);
+            Assert.False(fvt.IsBusModule);
+
+            DiagnosticEntry fvz = Assert.Single(Run(Row("CABINETAL00206", address: "I12.6"), SwpPlantType.Safety, log));
+            Assert.Equal("I12.6", fvz.SwpAddress());
+            Assert.Empty(log);
+
+            Assert.Empty(Run(Row("CABINETAL00300", address: "Q.0.1"), SwpPlantType.Safety, log));   // an output
+            Assert.Empty(log);
+
+            // A sorter list with the same shape has lost its bit — still an error, still dropped.
+            Assert.Empty(Run(Row("CABINETAL00104", address: "I.0.4"), SwpPlantType.Msc, log));
+            SwpLogEntry error = Assert.Single(log);
+            Assert.Equal(SwpLogSeverity.Error, error.Severity);
+            Assert.Contains("unreadable I/O address \"I.0.4\"", error.Message);
+
+            // A module row on the safety list is unchanged: node from the ID, no bit address.
+            DiagnosticEntry module = Assert.Single(Run(Row("CABINETAL00800", address: "", id: "23", type: "PA"), SwpPlantType.Safety));
+            Assert.True(module.IsBusModule);
+            Assert.Equal("23.0.0", module.SwpAddress());
+        }
+
         [Fact]
         public void Splits_multi_mnemonic_cells_into_separate_entries()
         {
@@ -87,39 +141,60 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
         }
 
         [Fact]
-        public void Emergency_rewrites_to_cabinet_alarm()
+        public void Emergency_keeps_its_own_name()
         {
+            // It used to be RENAMED to CABINETAL so it would ride the cabinet branch — the two
+            // prefixes are both nine characters, which is the only reason that worked. The rule
+            // table gives it a destination instead, so the name Plant_Inputs knows it by survives.
             var entries = Run(Row("EMERGENCY00100"), SwpPlantType.Msc);
             DiagnosticEntry e = Assert.Single(entries);
-            Assert.Equal("CABINETAL00100", e.Mnemonic);
+            Assert.Equal("EMERGENCY00100", e.Mnemonic);
             Assert.Equal("EMERGENCY00100", e.RawMnemonic);
         }
 
         [Fact]
-        public void Emeri_rewrites_to_allq()
+        public void Emeri_keeps_its_own_name()
         {
             var entries = Run(Row("EMERI_1_01_07"), SwpPlantType.Ups);
-            Assert.Equal("ALLQ_1_01_07", Assert.Single(entries).Mnemonic);
+            Assert.Equal("EMERI_1_01_07", Assert.Single(entries).Mnemonic);
         }
 
         [Fact]
-        public void Allq_and_collapses_and_chops_two_characters()
+        public void Only_the_zero_member_of_an_and_group_is_kept()
         {
-            // Legacy verbatim: replace ALLQ_AND_ with ALLQ_, then drop the last two characters.
-            var log = new List<SwpLogEntry>();
-            var entries = Run(Row("ALLQ_AND_1_01_00"), SwpPlantType.Ups, log);
-            Assert.Equal("ALLQ_1_01_", Assert.Single(entries).Mnemonic);
-            Assert.Contains(log, l => l.Severity == SwpLogSeverity.Warning); // unusual length, kept
+            // Many digital inputs drive ONE diagnostic bit; the string is built from the _0 member
+            // and the rest are recognized and dropped. The legacy tool got here by rewriting the
+            // name and chopping two characters off it.
+            Assert.Equal("ALLQ_AND_1_01_00_0",
+                Assert.Single(Run(Row("ALLQ_AND_1_01_00_0"), SwpPlantType.Ups)).Mnemonic);
+
+            Assert.Empty(Run(Row("ALLQ_AND_1_01_00_1"), SwpPlantType.Ups));
+            Assert.Empty(Run(Row("ALLQ_OR_1_01_00_7"), SwpPlantType.Ups));
         }
 
         [Fact]
-        public void Msc_rejects_wrong_lengths_with_an_error_log()
+        public void A_shape_no_rule_claims_is_dropped_quietly()
         {
+            // The per-row length ERROR is gone with the length gate that produced it: an unclaimed
+            // mnemonic is now just one of the many non-diagnostic rows, and those never logged.
             var log = new List<SwpLogEntry>();
             Assert.Empty(Run(Row("CABINETAL001000"), SwpPlantType.Msc, log));
-            SwpLogEntry entry = Assert.Single(log);
-            Assert.Equal(SwpLogSeverity.Error, entry.Severity);
-            Assert.Equal("CABINETAL001000", entry.Mnemonic);
+            Assert.DoesNotContain(log, l => l.Severity == SwpLogSeverity.Error);
+        }
+
+        [Fact]
+        public void Claiming_almost_nothing_warns_about_the_plant_type()
+        {
+            // What replaces the per-row errors: the RATIO. A sorter IO list read as an upstream
+            // plant matches almost nothing, and that must not pass for a clean build.
+            var log = new List<SwpLogEntry>();
+            var rows = new List<IoRowData>();
+            for (int i = 0; i < 40; i++) rows.Add(Row("CABINETAL" + i.ToString("000") + "00"));
+
+            Assert.Empty(SwpMnemonicFilter.Run(rows,
+                new SwpFilterOptions { PlantType = SwpPlantType.Ups }, log));
+            Assert.Contains(log, l => l.Severity == SwpLogSeverity.Warning &&
+                l.Message.Contains("check the plant type"));
         }
 
         [Theory]
@@ -255,10 +330,10 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
                 new SwpFilterOptions { PlantType = SwpPlantType.Msc }, log));
             Assert.Empty(log);
 
-            // Anchored occurrences keep the legacy behavior.
-            Assert.Equal("CABINETAL00105", SwpMnemonicFilter.ApplyRewrites("EMERGENCY00105"));
-            Assert.Equal("ALLQ_1_01_05", SwpMnemonicFilter.ApplyRewrites("EMERI_1_01_05"));
-            Assert.Equal("A_RESET_EMERGENCY", SwpMnemonicFilter.ApplyRewrites("A_RESET_EMERGENCY"));
+            // The rules are ANCHORED, which is what keeps the field case fixed: EMERGENCY at the
+            // start is a cabinet alarm, EMERGENCY in the middle of a command is nothing.
+            Assert.Single(Run(Row("EMERGENCY00105"), SwpPlantType.Msc));
+            Assert.Single(Run(Row("EMERI_1_01_05"), SwpPlantType.Ups));
         }
 
         // ---- stray-character hygiene --------------------------------------------------------

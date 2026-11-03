@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 {
@@ -14,13 +15,26 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     /// and a STROBE sheet's first header Location must be =MID(F15,4,12).
     ///
     /// AUDIT (needs a reference SWP, findings only): every target row folds onto the base's
-    /// canonical block; a column where the base holds a formula but the target does not is
-    /// damage (MISSING_F — the classic paste-over), and an external CONFIG_PLANT reference that
-    /// differs from the base's (names normalized) points at the wrong template row.
+    /// canonical block by its distance from its OWN block header; a column where the base holds a
+    /// formula but the target does not is damage (MISSING_F — the classic paste-over), and an
+    /// external CONFIG_PLANT reference that differs from the base's (names normalized) points at
+    /// the wrong template row.
+    ///
+    /// The reference SWP holds ONE block of each element (header near row 15) while the target
+    /// holds many, so a same-sheet reference is never an absolute address: it names either the row
+    /// itself (T/U) or the row's block header (F in Q/R, C in S, H, I). Both anchors are collapsed
+    /// before comparing — see <see cref="NormalizeExternal"/> — so "F181" here and "F15" there read
+    /// alike, while a reference to any OTHER row survives and stays a finding.
     /// </summary>
     public static class SwpFormulaCheck
     {
         private const int MaxAuditLogPerSheet = 50;
+
+        /// <summary>Column L — the T.S. reference card.</summary>
+        private const int TsRefColumn = 12;
+
+        /// <summary>The sheet parameter (B4) that marks a cabinet table.</summary>
+        private const string CabinetsTable = "DB_CABINETS_DIAG";
 
         // ---- self-contained repairs ---------------------------------------------------------
 
@@ -211,25 +225,29 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         {
             if (baseSheet.BlockHeaders.Count == 0 || sheet.BlockHeaders.Count == 0) return;
 
-            int baseFirst = baseSheet.BlockHeaders[0].RowNumber;
-            int blockLength = baseSheet.BlockHeaders.Count > 1
-                ? baseSheet.BlockHeaders[1].RowNumber - baseFirst
-                : 166;   // the canonical block
-
-            // The base block's rows by their offset inside the block.
+            // A row's place inside its block is its distance from its OWN header, which the reader
+            // already resolved. The previous version folded rows with a modulo over a block length
+            // guessed from the base's first two headers — and the reference SWP holds exactly ONE
+            // block of each element, so that guess was always the hardcoded 166. Anchoring on the
+            // row's own header needs no stride at all and survives blocks of unequal length.
             var baseByOffset = new Dictionary<int, SwpRowSnapshot>();
             foreach (SwpRowSnapshot row in baseSheet.BitRows)
             {
-                int offset = (row.RowNumber - baseFirst) % blockLength;
+                int offset = row.RowNumber - row.BlockHeaderRow;
                 if (!baseByOffset.ContainsKey(offset)) baseByOffset[offset] = row;
             }
 
-            int targetFirst = sheet.BlockHeaders[0].RowNumber;
+            // The T.S. ref (L) on a CABINET table is normally TYPED, not computed — the cards are
+            // assigned by hand. The reference file happens to carry a formula there, so comparing
+            // it column-blind reported every hand-filled row as lost damage. On cabinets that is
+            // the norm, not the exception, so the column is not audited for formula loss here.
+            bool skipTsRefFormula = (sheet.DdeTable ?? "").Trim()
+                .Equals(CabinetsTable, StringComparison.OrdinalIgnoreCase);
+
             int logged = 0, suppressed = 0;
             foreach (SwpRowSnapshot row in sheet.BitRows)
             {
-                int offset = (row.RowNumber - targetFirst) % blockLength;
-                if (offset < 0) offset += blockLength;
+                int offset = row.RowNumber - row.BlockHeaderRow;
                 if (!baseByOffset.TryGetValue(offset, out SwpRowSnapshot baseRow)) continue;
 
                 // MISSING_F: the base holds a formula in a column, the target does not.
@@ -239,6 +257,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     uint bit = 1u << (column - 1);
                     if ((missing & bit) == 0) continue;
                     missing &= ~bit;
+                    if (column == TsRefColumn && skipTsRefFormula) continue;
                     Emit(log, ref logged, ref suppressed,
                         "audit '" + sheet.SheetName + "' row " + row.RowNumber + " col " +
                         ColumnLetter(column) + ": the reference has a formula here, this file has " +
@@ -250,8 +269,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 foreach (var pair in row.ExternalFormulas)
                 {
                     if (!baseRow.ExternalFormulas.TryGetValue(pair.Key, out string baseFormula)) continue;
-                    string normalized = NormalizeExternal(pair.Value, row.RowNumber);
-                    string baseNormalized = NormalizeExternal(baseFormula, baseRow.RowNumber);
+                    string normalized = NormalizeExternal(pair.Value, row.RowNumber, row.BlockHeaderRow);
+                    string baseNormalized = NormalizeExternal(baseFormula, baseRow.RowNumber, baseRow.BlockHeaderRow);
                     if (normalized == baseNormalized) continue;
                     Emit(log, ref logged, ref suppressed,
                         "audit '" + sheet.SheetName + "' row " + row.RowNumber + " col " +
@@ -265,14 +284,59 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     "audit '" + sheet.SheetName + "': " + suppressed + " further finding(s) not listed"));
         }
 
+        /// <summary>A local cell reference once '$' is stripped: column letters + row digits that
+        /// are NOT preceded by a sheet qualifier ('!'), by the external workbook id ('['), or by
+        /// more letters/digits. So "[1]DB_CHUTE!L47" yields nothing and "F181" yields F/181.</summary>
+        private static readonly Regex LocalReference = new Regex(
+            @"(?<![A-Z0-9_!\[])([A-Z]{1,3})(\d{1,7})(?![0-9(])",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
         /// <summary>
-        /// Strips what legitimately differs between base and target: '$' anchors, the BASE_
-        /// prefix convention, and the row's own number in local references.
+        /// Strips what legitimately differs between base and target: '$' anchors, the BASE_ prefix
+        /// convention, and the two ANCHORS a same-sheet reference can carry.
+        ///
+        /// Inside a block, a local reference is never an absolute address — it points either at the
+        /// row itself (T/U, the description cells) or at the row's BLOCK HEADER (F in Q/R, C in S,
+        /// H and I). The reference SWP holds one block per element with its header near the top, the
+        /// target holds many, so the same structural formula reads "F15" there and "F181" here.
+        /// Both collapse to the same token and compare equal; a reference to any OTHER row survives
+        /// normalization and stays a finding — that is exactly the botched-formula case.
+        ///
+        /// Token-aware on purpose. The previous version replaced the row number as a raw substring,
+        /// which on row 47 turned "[1]DB_CHUTE!$L$47" into "…$L$#R" and made a genuinely wrong
+        /// external target compare EQUAL, and on row 1 mangled "[1]" and "%1".
         /// </summary>
-        internal static string NormalizeExternal(string formula, int rowNumber)
+        internal static string NormalizeExternal(string formula, int rowNumber, int blockHeaderRow)
         {
-            string s = (formula ?? "").Replace("$", "").Replace("BASE_CONFIG_PLANT", "CONFIG_PLANT");
-            return s.Replace(rowNumber.ToString(CultureInfo.InvariantCulture), "#R").ToUpperInvariant();
+            string s = (formula ?? "").Replace("$", "")
+                .Replace("BASE_CONFIG_PLANT", "CONFIG_PLANT").ToUpperInvariant();
+            if (s.Length == 0) return s;
+
+            // Quoted text is data, not references: an alarm label like "AL14" must never be read
+            // as a cell on row 14.
+            bool[] quoted = QuotedSpans(s);
+            return LocalReference.Replace(s, match =>
+            {
+                if (quoted[match.Index]) return match.Value;
+                if (!int.TryParse(match.Groups[2].Value, NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out int referenced))
+                    return match.Value;
+                if (referenced == blockHeaderRow) return match.Groups[1].Value + "#H";
+                if (referenced == rowNumber) return match.Groups[1].Value + "#R";
+                return match.Value;
+            });
+        }
+
+        private static bool[] QuotedSpans(string s)
+        {
+            var quoted = new bool[s.Length];
+            bool inside = false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (s[i] == '"') { inside = !inside; quoted[i] = true; continue; }
+                quoted[i] = inside;
+            }
+            return quoted;
         }
 
         private static void Emit(List<SwpLogEntry> log, ref int logged, ref int suppressed, string message)

@@ -22,6 +22,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         internal const string DictionarySheetName = "_Dictionary";
         internal const string GlossarySheetName = "_Glossary";
         internal const string OffsetsSheetName = "_Offsets";
+        internal const string MnemonicsSheetName = "_Mnemonics";
         internal const string TsRefSheetName = "_TSRef";
         internal const string StrobeSheetName = "_StrobeTemplates";
         internal const string PreviewSheetName = "_Preview";
@@ -131,6 +132,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 return name == HomeSheetName || name == SpineSheetName || name == QueueSheetName ||
                        name == LogSheetName || name == DictionarySheetName ||
                        name == GlossarySheetName || name == OffsetsSheetName ||
+                       name == MnemonicsSheetName ||
                        name == TsRefSheetName || name == StrobeSheetName ||
                        name == PreviewSheetName;
             }

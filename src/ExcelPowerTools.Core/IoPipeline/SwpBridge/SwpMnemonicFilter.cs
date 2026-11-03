@@ -12,14 +12,26 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
         /// <summary>Mnemonics dropped even when a built-in pattern accepts them (null = none).</summary>
         public Regex ExcludeMnemonics;
+
+        /// <summary>
+        /// The rule table that decides both WHETHER a mnemonic is a diagnostic and WHERE it lands
+        /// (null = the shipped default). Making one table answer both questions is what removes
+        /// the legacy rewrites: nothing has to be renamed into an existing shape to be recognized.
+        /// </summary>
+        public SwpMnemonicMap Map;
     }
 
     /// <summary>
-    /// The legacy LoadIOList harvesting rules: which IO-list rows are diagnostic signals bound for
-    /// the SWP. Multi-mnemonic cells split on "/", the "BUS_" prefix is stripped, the built-in
-    /// pattern union accepts alarm/warning shapes, the EMERGENCY→CABINETAL and EMERI_→ALLQ_
-    /// aliases are rewritten, and the per-plant-type length rules reject malformed names. Output
-    /// addresses ("Q.") never reach the SWP — it documents inputs.
+    /// Which IO-list rows are diagnostic signals bound for the SWP. Multi-mnemonic cells split on
+    /// "/", the "BUS_" prefix is stripped (notation, not identity — the plant CSVs know the signal
+    /// without it), and then the MNEMONIC MAP decides: a shape it claims is a diagnostic, a shape
+    /// it claims with no destination is recognized and dropped on purpose, and anything else is
+    /// the non-diagnostic mass. Output addresses ("Q.") never reach the SWP — it documents inputs.
+    ///
+    /// Nothing is renamed here any more. The legacy pattern union, per-plant length rules and
+    /// EMERGENCY→CABINETAL / EMERI_→ALLQ_ aliases all existed to force a shape into a branch that
+    /// already knew where to write; the table states the destination instead, so a signal keeps
+    /// the name its plant CSVs use and a new shape costs one row rather than a new branch.
     /// </summary>
     public static class SwpMnemonicFilter
     {
@@ -30,15 +42,32 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             options = options ?? new SwpFilterOptions();
 
             var cleanedSeen = new HashSet<string>(System.StringComparer.Ordinal);
+            // Resolved ONCE: the shipped table compiles some thirty regexes, and a 30k-row IO list
+            // would otherwise rebuild it per mnemonic.
+            SwpMnemonicMap map = options.Map ?? SwpMnemonicMapDefaults.Official();
+            int candidates = 0;
             foreach (IoRowData row in rows)
             {
                 if (row == null) continue;
                 foreach (string part in (row.MnemonicCell ?? "").Split('/'))
                 {
-                    DiagnosticEntry entry = FilterOne(row, part, options, cleanedSeen, log);
+                    if ((part ?? "").Trim().Length > 0) candidates++;
+                    DiagnosticEntry entry = FilterOne(row, part, options, map, cleanedSeen, log);
                     if (entry != null) entries.Add(entry);
                 }
             }
+
+            // Most of an IO list is not diagnostics, so an unclaimed mnemonic is normal and gets
+            // no line of its own. The RATIO is the signal worth keeping: when the mnemonic map
+            // claims almost nothing, the plant type is usually wrong — which the per-row length
+            // errors used to shout about before the table replaced them.
+            // Needs a real sample: on a handful of rows a low ratio says nothing, and a test or a
+            // one-row probe must not be told its plant type is wrong.
+            if (candidates >= 20 && entries.Count * 20 < candidates)
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "the mnemonic map claimed only " + entries.Count + " of " + candidates +
+                    " mnemonic(s) for plant type " + options.PlantType +
+                    " — check the plant type (1-MSC, 2-ISPC, 3-UPS, 4-SAFETY) and the map"));
             return entries;
         }
 
@@ -95,7 +124,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         }
 
         private static DiagnosticEntry FilterOne(IoRowData row, string rawPart, SwpFilterOptions options,
-            HashSet<string> cleanedSeen, List<SwpLogEntry> log)
+            SwpMnemonicMap map, HashSet<string> cleanedSeen, List<SwpLogEntry> log)
         {
             string raw = (rawPart ?? "").Trim();
             if (raw.Length == 0) return null;
@@ -103,42 +132,27 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             string m = raw.Replace("BUS_", "");
             if (m.Length == 0) return null;
 
-            // An include-regex match is an explicit user override: it bypasses the base length
-            // gate AND the per-type length validation below — otherwise the regex could never
-            // rescue a shape the built-in rules reject.
+            // An include-regex match is an explicit user override: it rescues a shape no rule in
+            // the mnemonic map claims. Such a row enters the workspace and fails later AT mapping
+            // with "#Invalid Mnemonic", which is what the legacy rescue did too — the override
+            // decides what is worth looking at, never where it lands.
             bool rescued = options.IncludeMnemonics != null && options.IncludeMnemonics.IsMatch(m);
 
-            // The legacy base gate: plausible mnemonic lengths only. Rows outside are the
-            // non-diagnostic mass and are skipped without a log line, as the VBA did.
-            if (!rescued && (m.Length <= 9 || m.Length >= 23)) return null;
-
-            if (!rescued && !MatchesBuiltInPatterns(m)) return null;
-
-            // EMERGENCY_ON / EMERGENCY_RST are commands, not diagnostics (legacy hard exclusion).
-            if (m.Contains("EMERGENCY_ON") || m.Contains("EMERGENCY_RST")) return null;
+            // The mnemonic map IS the filter. A shape no rule claims is the non-diagnostic mass
+            // and is skipped without a log line, as the VBA did; a shape claimed by a rule with no
+            // destination (the EMERGENCY_ON/RST commands, the AND/OR group members after the
+            // first) is recognized ON PURPOSE and skipped just as quietly. What used to be a
+            // length gate, a pattern union, a hardcoded exclusion list and a per-plant length
+            // check is now one question asked of the table.
+            SwpMnemonicRule rule = map.RuleFor(m, options.PlantType);
+            if (rule == null && !rescued) return null;
+            if (rule != null && rule.MapsNowhere) return null;
 
             if (options.ExcludeMnemonics != null && options.ExcludeMnemonics.IsMatch(m))
             {
                 log?.Add(SwpLogEntry.For(SwpLogSeverity.Info, "excluded by the session regex",
                     row.CardSheet, row.SourceRow, m));
                 return null;
-            }
-
-            m = ApplyRewrites(m);
-
-            if (!rescued && !LengthValidFor(options.PlantType, m, out string lengthProblem))
-            {
-                log?.Add(SwpLogEntry.For(SwpLogSeverity.Error,
-                    lengthProblem + " — check the plant type (1-MSC, 2-ISPC, 3-UPS, 4-SAFETY)",
-                    row.CardSheet, row.SourceRow, m));
-                return null;
-            }
-            if (!rescued && options.PlantType == SwpPlantType.Ups && (m.Length < 12 || m.Length > 13))
-            {
-                // The legacy tool only warned here and kept going.
-                log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
-                    "length " + m.Length + " is unusual for an upstream mnemonic",
-                    row.CardSheet, row.SourceRow, m));
             }
 
             var entry = new DiagnosticEntry
@@ -163,20 +177,35 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             string address = Clean(row.AddressCell, "Bit address", row, cleanedSeen, log).Trim();
             if (address.Contains("."))
             {
-                if (!IoListLogic.TryParseAddress(address, out char direction, out string node, out string offset, out string bit))
+                if (IoListLogic.TryParseAddress(address, out char direction, out string node, out string offset, out string bit))
+                {
+                    if (direction == 'O')
+                    {
+                        // Outputs never reach the SWP (the legacy list builder skipped Q/O rows).
+                        return null;
+                    }
+                    entry.Node = node;
+                    entry.Offset = offset;
+                    entry.Bit = bit;
+                }
+                else if (options.PlantType == SwpPlantType.Safety &&
+                         IoListLogic.TryParsePlcAddress(address, out char plcDirection, out string byteOffset, out string plcBit))
+                {
+                    // The safety PLC's list addresses its inputs as Siemens absolute addresses —
+                    // "I.0.4" (FVT), "I0.4" (FVZ) — with no node, because a distributed input is
+                    // unique PLC-wide. Only SAFETY reads them: on a sorter list a three-part
+                    // address is a missing bit, and staying unreadable there keeps it visible.
+                    if (plcDirection == 'O') return null;
+                    entry.PlcAddress = IoListLogic.BuildPlcAddress(byteOffset, plcBit);
+                    entry.Offset = byteOffset;
+                    entry.Bit = plcBit;
+                }
+                else
                 {
                     log?.Add(SwpLogEntry.For(SwpLogSeverity.Error,
                         "unreadable I/O address \"" + address + "\"", row.CardSheet, row.SourceRow, m));
                     return null;
                 }
-                if (direction == 'O')
-                {
-                    // Outputs never reach the SWP (the legacy list builder skipped Q/O rows).
-                    return null;
-                }
-                entry.Node = node;
-                entry.Offset = offset;
-                entry.Bit = bit;
             }
             else
             {
@@ -220,78 +249,6 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             return entry;
         }
 
-        /// <summary>
-        /// The acceptance union, applied regardless of plant type (the per-type length rules
-        /// then reject foreign shapes): CABINET/CLASSDIAG and the upstream quads anywhere,
-        /// BELT/ZONE alarm-warning, EMERI and EMERGENCY only at the start — command signals
-        /// like A_RESET_EMERGENCY carry the word mid-string and are not diagnostics.
-        /// </summary>
-        internal static bool MatchesBuiltInPatterns(string m)
-        {
-            return m.Contains("CABINET")
-                || StartsWith(m, "BELTAL") || StartsWith(m, "BELTWR")
-                || StartsWith(m, "ZONEAL") || StartsWith(m, "ZONEWR")
-                || m.Contains("CLASSDIAG")
-                || StartsWith(m, "EMERGENCY")
-                || m.Contains("ALLQ") || m.Contains("WARQ")
-                || m.Contains("ALLB") || m.Contains("WARB")
-                || m.Contains("ALLZ") || m.Contains("WARZ")
-                || StartsWith(m, "EMERI");
-        }
-
-        /// <summary>
-        /// The aliases, in the legacy order but ANCHORED AT THE START: EMERI_ folds into ALLQ_,
-        /// EMERGENCY into CABINETAL, and ALLQ_AND_ collapses to ALLQ_ with the last two
-        /// characters dropped. Mid-string occurrences are left alone — the field showed
-        /// A_RESET_EMERGENCY (a command) being mangled into A_RESET_CABINETAL by the old
-        /// anywhere-Replace.
-        /// </summary>
-        internal static string ApplyRewrites(string m)
-        {
-            if (StartsWith(m, "EMERI_")) m = "ALLQ_" + m.Substring("EMERI_".Length);
-            if (StartsWith(m, "EMERGENCY")) m = "CABINETAL" + m.Substring("EMERGENCY".Length);
-            if (StartsWith(m, "ALLQ_AND_"))
-            {
-                m = "ALLQ_" + m.Substring("ALLQ_AND_".Length);
-                m = m.Length >= 2 ? m.Substring(0, m.Length - 2) : m;
-            }
-            return m;
-        }
-
-        private static bool LengthValidFor(SwpPlantType plantType, string m, out string problem)
-        {
-            problem = "";
-            switch (plantType)
-            {
-                case SwpPlantType.Msc:
-                case SwpPlantType.Safety:
-                    // CABINETAL00100 (14) or CLASSDIAG AL 0062 00001 00 → 22 chars. SAFETY
-                    // mnemonics are MSC-shaped (the legacy filter shared its MSC branch too).
-                    if (m.Length != 14 && m.Length != 22)
-                    {
-                        problem = "length " + m.Length + " is not a sorter mnemonic (14 or 22)";
-                        return false;
-                    }
-                    return true;
-
-                case SwpPlantType.Ispc:
-                    int expected =
-                        m.Contains("CABINET") ? 15 :
-                        m.Contains("BELT") ? 11 :
-                        m.Contains("ZONE") ? 10 : 0;
-                    if (m.Length != expected || expected == 0)
-                    {
-                        problem = expected == 0
-                            ? "not an induction mnemonic shape"
-                            : "length " + m.Length + " is not an induction mnemonic (" + expected + ")";
-                        return false;
-                    }
-                    return true;
-
-                default:
-                    return true; // UPS: warned by the caller, never rejected (legacy behavior)
-            }
-        }
 
         /// <summary>AS-I node identity: digits + A/B half ("01a" normalizes to "1A").</summary>
         internal static bool TryAsiNode(string id, out string node)

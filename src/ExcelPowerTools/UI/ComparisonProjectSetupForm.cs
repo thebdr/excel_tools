@@ -249,7 +249,7 @@ namespace ExcelPowerTools.UI
 
             var limits = new Label
             {
-                Text = "ALPHA: .xlsx/.xlsm only. AGGREGATE LIMITS: 2,000,000 physically stored cells; 10,000,000 content-bounded grid cells. PER SHEET: 100,000 rows; 4,096 columns; 5,000,000 grid cells. Each sheet stops at its last formula/value row and column; stored blank/formatting-only tails are ignored and reported. Ambiguous structure opens correction review; sources stay read-only.",
+                Text = "ALPHA: .xlsx/.xlsm only. AUDIT: 2,000,000 stored cells per revision; 10,000,000 across the project. ALIGNMENT: 2,000,000 retained useful-range cells; 10,000,000 grid cells. PER SHEET: 100,000 rows; 4,096 columns; 5,000,000 grid cells. Blank/formatting-only tails are audited, reported, then released. Ambiguous structure opens correction review; sources stay read-only.",
                 ForeColor = Color.FromArgb(130, 76, 18),
                 Location = new Point(22, 669),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,

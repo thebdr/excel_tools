@@ -126,8 +126,10 @@ namespace ExcelPowerTools.Core.Comparison.Project
                         ordered[ordered.Count - 1],
                         "",
                         complete
-                            ? "Building exact formula/value transitions across the aligned revision tree."
-                            : "Building partial exact stored formula/value transitions for safely aligned sheets.");
+                            ? "Building history of stored values, saved calculated values, and formulas across " +
+                              "the aligned revision tree."
+                            : "Building partial history of stored values, saved calculated values, and formulas " +
+                              "for safely aligned sheets.");
                     history = LogicalHistoryEngine.Build(
                         projectId,
                         effectiveMappingGenerationId,
@@ -317,7 +319,9 @@ namespace ExcelPowerTools.Core.Comparison.Project
             }
             progress.CompleteRevision(revision);
 
-            bool complete = sheets.Count == evidenceSet.Sheets.Count && findings.Count == findingStart;
+            bool complete = sheets.Count == evidenceSet.Sheets.Count &&
+                            !findings.Skip(findingStart)
+                                .Any(item => item.Severity >= DiagnosticSeverity.Correctable);
             RevisionSnapshot aligned = complete
                 ? CreateAlignedWorkbookSnapshot(revision.RevisionId, sheets, cancellationToken)
                 : null;
@@ -336,25 +340,6 @@ namespace ExcelPowerTools.Core.Comparison.Project
             ProjectProgressReporter progress)
         {
             int findingStart = findings.Count;
-            if (!string.Equals(
-                    parent.Source.Snapshot.ByteContentId,
-                    child.Snapshot.ByteContentId,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                findings.Add(Finding(
-                    projectId,
-                    OpenXmlProjectFindingCodes.NonFormulaValueContentUnmodeled,
-                    DiagnosticSeverity.Warning,
-                    parent.Source.RevisionId,
-                    child.RevisionId,
-                    "",
-                    "",
-                    "The exact workbook bytes differ. Formula/value history does not cover styles, fills, " +
-                    "comments, drawings, or other OOXML package parts, so those changes may require separate review.",
-                    "Review the source workbooks for non-formula/value changes when those package details matter.",
-                    new[] { "workbook.exact-bytes-differ", "history.formula-value-scope" },
-                    Array.Empty<string>()));
-            }
             progress.Report(
                 OpenXmlComparisonProjectProgressStage.MappingSheets,
                 child,
@@ -1130,16 +1115,22 @@ namespace ExcelPowerTools.Core.Comparison.Project
 
             AlignmentTable beforeTable = parentSheet.Grid.Table;
             AlignmentTable afterTable = afterGrid.Table;
+            bool hasExactPositionalEvidence = HasExactPositionalCellEvidence(
+                before,
+                parentSheet.Grid,
+                after,
+                afterGrid,
+                cancellationToken);
             progress.Report(
                 OpenXmlComparisonProjectProgressStage.DetectingHeaders,
                 child,
                 after.Fingerprint.Name,
                 "Detecting comparable headers in sheet '" + after.Fingerprint.Name + "'.");
-            corrections.TryGetHeaderRow(
+            bool hasBeforeHeaderCorrection = corrections.TryGetHeaderRow(
                 parent.Source.RevisionId,
                 before.Fingerprint.SheetKey,
                 out AlignmentHeaderRowConfirmation beforeHeaderCorrection);
-            corrections.TryGetHeaderRow(
+            bool hasAfterHeaderCorrection = corrections.TryGetHeaderRow(
                 child.RevisionId,
                 after.Fingerprint.SheetKey,
                 out AlignmentHeaderRowConfirmation afterHeaderCorrection);
@@ -1158,7 +1149,7 @@ namespace ExcelPowerTools.Core.Comparison.Project
                 child,
                 after.Fingerprint.Name,
                 "Inferring conservative row keys in sheet '" + after.Fingerprint.Name + "'.");
-            corrections.TryGetKeyColumns(
+            bool hasKeyCorrection = corrections.TryGetKeyColumns(
                 parent.Source.RevisionId,
                 child.RevisionId,
                 before.Fingerprint.SheetKey,
@@ -1172,8 +1163,17 @@ namespace ExcelPowerTools.Core.Comparison.Project
                 KeyOptions(options.KeyInference, keyCorrection),
                 cancellationToken);
 
+            // Exact canonical evidence at the same physical coordinates is stronger than inferred keys, header
+            // labels, or content-occurrence anchors. In particular, duplicate rows and duplicate header labels
+            // cannot make an unchanged sheet ambiguous. Active reviewer corrections still take precedence so an
+            // explicit semantic choice is never silently bypassed by this automatic fast path.
+            bool useExactPositionalEvidence = hasExactPositionalEvidence &&
+                                              !hasBeforeHeaderCorrection &&
+                                              !hasAfterHeaderCorrection &&
+                                              !hasKeyCorrection;
             bool headerShapeSafe = true;
-            if (beforeHeader.HasAcceptedHeader != afterHeader.HasAcceptedHeader)
+            if (!useExactPositionalEvidence &&
+                beforeHeader.HasAcceptedHeader != afterHeader.HasAcceptedHeader)
             {
                 headerShapeSafe = false;
                 findings.Add(Finding(
@@ -1190,15 +1190,17 @@ namespace ExcelPowerTools.Core.Comparison.Project
                     HeaderReasonCodes(beforeHeader, afterHeader),
                     Array.Empty<string>()));
             }
-            else if (beforeHeader.HasAcceptedHeader &&
+            else if (!useExactPositionalEvidence &&
+                     beforeHeader.HasAcceptedHeader &&
                      (beforeHeader.AcceptedHeaderRowIndex.Value != 0 ||
                       afterHeader.AcceptedHeaderRowIndex.Value != 0 ||
                       beforeHeader.DataStartRowIndex != beforeHeader.AcceptedHeaderRowIndex.Value + 1 ||
                       afterHeader.DataStartRowIndex != afterHeader.AcceptedHeaderRowIndex.Value + 1) &&
-                     (beforeHeader.Decision != HeaderDecision.ConfirmedHeader ||
-                      afterHeader.Decision != HeaderDecision.ConfirmedHeader ||
-                      beforeHeader.AcceptedHeaderRowIndex.Value != afterHeader.AcceptedHeaderRowIndex.Value ||
-                      beforeHeader.DataStartRowIndex != afterHeader.DataStartRowIndex))
+                     !CanLinkNonLeadingHeaderAutomatically(
+                         beforeTable,
+                         afterTable,
+                         beforeHeader,
+                         afterHeader))
             {
                 headerShapeSafe = false;
                 findings.Add(Finding(
@@ -1209,11 +1211,13 @@ namespace ExcelPowerTools.Core.Comparison.Project
                     child.RevisionId,
                     parentSheet.LogicalSheetId,
                     after.Fingerprint.Name,
-                    "A non-leading header or separated first-data row is not confirmed with equal pre-data row " +
-                    "counts on both sheet occurrences.",
-                    "Confirm the exact header and first data row on both revisions. Unequal preamble/subheader " +
-                    "counts remain blocked because the engine will not guess their row identities.",
-                    HeaderReasonCodes(beforeHeader, afterHeader),
+                    "The detected non-leading header or separated first-data row does not have enough matching " +
+                    "structure to retain every pre-data row identity safely.",
+                    "Confirm the exact header and first data row on both revisions. Unequal pre-data counts, " +
+                    "changed preamble rows, or an automatically detected blank first-data row remain blocked " +
+                    "because the engine will not guess their row identities.",
+                    HeaderReasonCodes(beforeHeader, afterHeader)
+                        .Concat(new[] { "project.nonleading-predata-identity-unproven" }),
                     Array.Empty<string>()));
             }
 
@@ -1233,32 +1237,60 @@ namespace ExcelPowerTools.Core.Comparison.Project
                     null,
                     false);
 
-            progress.Report(
-                OpenXmlComparisonProjectProgressStage.AligningRows,
-                child,
-                after.Fingerprint.Name,
-                "Aligning logical rows in sheet '" + after.Fingerprint.Name + "'.");
-            AxisAlignmentResult rows = TabularAlignmentEngine.AlignRows(
-                beforeTable,
-                afterTable,
-                beforeHeader,
-                afterHeader,
-                key,
-                options.Alignment,
-                cancellationToken);
-            if (beforeHeader.HasAcceptedHeader)
-                rows = IncludeHeaderAndPreDataRows(rows, beforeHeader, afterHeader);
-            progress.Report(
-                OpenXmlComparisonProjectProgressStage.AligningColumns,
-                child,
-                after.Fingerprint.Name,
-                "Aligning logical columns in sheet '" + after.Fingerprint.Name + "'.");
-            AxisAlignmentResult columns = TabularAlignmentEngine.AlignColumns(
-                beforeTable,
-                afterTable,
-                beforeHeader,
-                afterHeader,
-                cancellationToken);
+            AxisAlignmentResult rows;
+            AxisAlignmentResult columns;
+            if (useExactPositionalEvidence)
+            {
+                progress.Report(
+                    OpenXmlComparisonProjectProgressStage.AligningRows,
+                    child,
+                    after.Fingerprint.Name,
+                    "Preserving exact positional row identity in unchanged sheet '" +
+                    after.Fingerprint.Name + "'.");
+                rows = CreateExactPositionalAlignment(
+                    beforeTable.RowCount,
+                    LogicalAxisKind.Row,
+                    cancellationToken);
+                progress.Report(
+                    OpenXmlComparisonProjectProgressStage.AligningColumns,
+                    child,
+                    after.Fingerprint.Name,
+                    "Preserving exact positional column identity in unchanged sheet '" +
+                    after.Fingerprint.Name + "'.");
+                columns = CreateExactPositionalAlignment(
+                    beforeTable.ColumnCount,
+                    LogicalAxisKind.Column,
+                    cancellationToken);
+            }
+            else
+            {
+                progress.Report(
+                    OpenXmlComparisonProjectProgressStage.AligningRows,
+                    child,
+                    after.Fingerprint.Name,
+                    "Aligning logical rows in sheet '" + after.Fingerprint.Name + "'.");
+                rows = TabularAlignmentEngine.AlignRows(
+                    beforeTable,
+                    afterTable,
+                    beforeHeader,
+                    afterHeader,
+                    key,
+                    options.Alignment,
+                    cancellationToken);
+                if (beforeHeader.HasAcceptedHeader)
+                    rows = IncludeHeaderAndPreDataRows(rows, beforeHeader, afterHeader);
+                progress.Report(
+                    OpenXmlComparisonProjectProgressStage.AligningColumns,
+                    child,
+                    after.Fingerprint.Name,
+                    "Aligning logical columns in sheet '" + after.Fingerprint.Name + "'.");
+                columns = TabularAlignmentEngine.AlignColumns(
+                    beforeTable,
+                    afterTable,
+                    beforeHeader,
+                    afterHeader,
+                    cancellationToken);
+            }
 
             bool safe = InspectAxis(
                             projectId,
@@ -1332,6 +1364,117 @@ namespace ExcelPowerTools.Core.Comparison.Project
                 rowIdentities,
                 columnIdentities,
                 safe && rowIdentities.IsFullyResolved && columnIdentities.IsFullyResolved);
+        }
+
+        private static bool HasExactPositionalCellEvidence(
+            OpenXmlSheetFingerprintEvidence before,
+            CanonicalGridProjection beforeGrid,
+            OpenXmlSheetFingerprintEvidence after,
+            CanonicalGridProjection afterGrid,
+            CancellationToken cancellationToken)
+        {
+            if (!before.CanUseCanonicalCellEvidence ||
+                !after.CanUseCanonicalCellEvidence ||
+                !before.Source.CanProjectExactStoredFormulaValueEvidence ||
+                !after.Source.CanProjectExactStoredFormulaValueEvidence)
+                return false;
+
+            AlignmentTable beforeTable = beforeGrid.Table;
+            AlignmentTable afterTable = afterGrid.Table;
+            if (beforeGrid.FirstPhysicalRow != afterGrid.FirstPhysicalRow ||
+                beforeGrid.FirstPhysicalColumn != afterGrid.FirstPhysicalColumn ||
+                beforeTable.RowCount != afterTable.RowCount ||
+                beforeTable.ColumnCount != afterTable.ColumnCount)
+                return false;
+
+            long beforeStoredCells = 0;
+            int processed = 0;
+            foreach (CanonicalCellState beforeCell in beforeGrid.Source.Cells.Values)
+            {
+                if ((processed++ & 0xFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                if (!CanonicalGridProjectionBuilder.TryParseSubjectCoordinate(
+                        beforeCell.SubjectKey,
+                        out int row,
+                        out int column))
+                    return false;
+                if (!IsInsideProjection(beforeGrid, row, column)) continue;
+
+                beforeStoredCells++;
+                if (!afterGrid.TryGetPhysicalCell(row, column, out CanonicalCellState afterCell) ||
+                    !HasSameExactCellEvidence(beforeCell, afterCell))
+                    return false;
+            }
+
+            long afterStoredCells = 0;
+            processed = 0;
+            foreach (CanonicalCellState afterCell in afterGrid.Source.Cells.Values)
+            {
+                if ((processed++ & 0xFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                if (!CanonicalGridProjectionBuilder.TryParseSubjectCoordinate(
+                        afterCell.SubjectKey,
+                        out int row,
+                        out int column))
+                    return false;
+                if (IsInsideProjection(afterGrid, row, column)) afterStoredCells++;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return beforeStoredCells == afterStoredCells;
+        }
+
+        private static bool IsInsideProjection(CanonicalGridProjection grid, int row, int column)
+        {
+            if (grid.Table.RowCount == 0 || grid.Table.ColumnCount == 0) return false;
+            return row >= grid.FirstPhysicalRow &&
+                   row < grid.FirstPhysicalRow + grid.Table.RowCount &&
+                   column >= grid.FirstPhysicalColumn &&
+                   column < grid.FirstPhysicalColumn + grid.Table.ColumnCount;
+        }
+
+        private static bool HasSameExactCellEvidence(
+            CanonicalCellState before,
+            CanonicalCellState after)
+        {
+            if (before.HasFormula != after.HasFormula ||
+                !string.Equals(before.FormulaText, after.FormulaText, StringComparison.Ordinal) ||
+                !string.Equals(before.FormulaMetadata, after.FormulaMetadata, StringComparison.Ordinal) ||
+                !before.ConstantValue.Equals(after.ConstantValue))
+                return false;
+
+            if (ReferenceEquals(before.CachedResult, after.CachedResult)) return true;
+            return before.CachedResult != null && before.CachedResult.Equals(after.CachedResult);
+        }
+
+        private static AxisAlignmentResult CreateExactPositionalAlignment(
+            int count,
+            LogicalAxisKind axis,
+            CancellationToken cancellationToken)
+        {
+            string axisName = axis == LogicalAxisKind.Row ? "row" : "column";
+            var reason = new AlignmentReason(
+                "axis.exact-evidence-position",
+                "The " + axisName +
+                " stayed at the same physical position inside a grid with identical stored values, saved " +
+                "calculated values, and formulas.");
+            var links = new List<AxisAlignmentLink>(count);
+            for (int index = 0; index < count; index++)
+            {
+                if ((index & 0x3F) == 0) cancellationToken.ThrowIfCancellationRequested();
+                links.Add(new AxisAlignmentLink(
+                    index,
+                    index,
+                    AxisAlignmentKind.Matched,
+                    AlignmentConfidence.Strong,
+                    AxisAlignmentStrategy.Positional,
+                    new[] { reason }));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return new AxisAlignmentResult(
+                AxisAlignmentStrategy.Positional,
+                links,
+                Array.Empty<AxisAlignmentAmbiguity>(),
+                new[] { reason });
         }
 
         private static bool InspectAxis(
@@ -1414,6 +1557,7 @@ namespace ExcelPowerTools.Core.Comparison.Project
                                              afterHeader.Decision == HeaderDecision.ConfirmedHeader
                 ? AlignmentConfidence.Confirmed
                 : AlignmentConfidence.Strong;
+            bool confirmed = confidence == AlignmentConfidence.Confirmed;
             int headerIndex = beforeHeader.AcceptedHeaderRowIndex.Value;
             int dataStart = beforeHeader.DataStartRowIndex;
             var links = new List<AxisAlignmentLink>(dataRows.Links.Count + dataStart);
@@ -1433,13 +1577,64 @@ namespace ExcelPowerTools.Core.Comparison.Project
                     new[]
                     {
                         new AlignmentReason(
-                            "project.confirmed-" + role + "-row-match",
-                            "The equal confirmed pre-data shape retains this " + role +
-                            " row at the same table-relative position on both revisions."),
+                            "project." + (confirmed ? "confirmed-" : "strong-evidence-") +
+                            role + "-row-match",
+                            confirmed
+                                ? "The equal confirmed pre-data shape retains this " + role +
+                                  " row at the same table-relative position on both revisions."
+                                : "Matching strong header detection and exact preamble evidence retain this " +
+                                  role + " row at the same table-relative position on both revisions."),
                     }));
             }
             links.AddRange(dataRows.Links);
             return new AxisAlignmentResult(dataRows.Strategy, links, dataRows.Ambiguities, dataRows.Reasons);
+        }
+
+        private static bool CanLinkNonLeadingHeaderAutomatically(
+            AlignmentTable before,
+            AlignmentTable after,
+            HeaderDetectionResult beforeHeader,
+            HeaderDetectionResult afterHeader)
+        {
+            if (!beforeHeader.HasAcceptedHeader || !afterHeader.HasAcceptedHeader ||
+                beforeHeader.AcceptedHeaderRowIndex.Value != afterHeader.AcceptedHeaderRowIndex.Value ||
+                beforeHeader.DataStartRowIndex != afterHeader.DataStartRowIndex)
+                return false;
+
+            if (beforeHeader.Decision == HeaderDecision.ConfirmedHeader &&
+                afterHeader.Decision == HeaderDecision.ConfirmedHeader)
+                return true;
+
+            int headerIndex = beforeHeader.AcceptedHeaderRowIndex.Value;
+            return HasEqualExactPreambleEvidence(before, after, headerIndex) &&
+                   HasPopulatedRow(before, beforeHeader.DataStartRowIndex) &&
+                   HasPopulatedRow(after, afterHeader.DataStartRowIndex);
+        }
+
+        private static bool HasEqualExactPreambleEvidence(
+            AlignmentTable before,
+            AlignmentTable after,
+            int headerIndex)
+        {
+            int columnCount = Math.Max(before.ColumnCount, after.ColumnCount);
+            for (int row = 0; row < headerIndex; row++)
+            {
+                for (int column = 0; column < columnCount; column++)
+                {
+                    bool beforePresent = before.TryGetCell(row, column, out string beforeValue);
+                    bool afterPresent = after.TryGetCell(row, column, out string afterValue);
+                    if (beforePresent != afterPresent ||
+                        !string.Equals(beforeValue, afterValue, StringComparison.Ordinal))
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool HasPopulatedRow(AlignmentTable table, int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= table.RowCount) return false;
+            return table.Rows[rowIndex].Values.Any(value => !string.IsNullOrWhiteSpace(value));
         }
 
         private static RevisionSnapshot CreateAlignedWorkbookSnapshot(
@@ -1804,7 +1999,7 @@ namespace ExcelPowerTools.Core.Comparison.Project
                     evidence.Fingerprint.Name,
                     "The physical sheet kind is not supported by canonical worksheet alignment.",
                     "Convert the sheet to a worksheet or exclude it from the comparison project.",
-                    evidence.CoverageCodes,
+                    ExactCellEvidenceReasonCodes(evidence),
                     Array.Empty<string>()));
                 return false;
             }
@@ -1818,10 +2013,11 @@ namespace ExcelPowerTools.Core.Comparison.Project
                     revisionId,
                     logicalSheetId,
                     evidence.Fingerprint.Name,
-                    "Power Tools cannot model complete stored formula/value evidence for this sheet.",
+                    "Power Tools cannot model complete stored-value, saved-calculated-value, and formula evidence " +
+                    "for this sheet.",
                     "Review the listed coverage codes and the source sheet directly. Do not rely on this diagnostic " +
                     "for cell-level completeness until the unsupported construct is removed or supported.",
-                    evidence.CoverageCodes,
+                    ExactCellEvidenceReasonCodes(evidence),
                     Array.Empty<string>()));
                 return false;
             }
@@ -1836,19 +2032,39 @@ namespace ExcelPowerTools.Core.Comparison.Project
                 findings.Add(Finding(
                     projectId,
                     OpenXmlProjectFindingCodes.IncompleteCellEvidence,
-                    DiagnosticSeverity.ArtifactBlocking,
+                    DiagnosticSeverity.Warning,
                     beforeRevisionId,
                     revisionId,
                     logicalSheetId,
                     evidence.Fingerprint.Name,
-                    "Exact stored formula text, formula metadata, and cached values are available for review, but " +
-                    "dynamic-array recalculation and spill semantics are not modeled.",
+                    "Stored values, saved calculated values, and exact formulas are available for review. " +
+                    "Spill metadata is retained only to warn that dynamic-array recalculation and spill semantics " +
+                    "are not modeled.",
                     "Review the exact stored changes in this diagnostic report. Merge remains blocked until Power " +
                     "Tools can validate the dynamic-array spill semantics.",
                     dynamicCoverage,
                     Array.Empty<string>()));
             }
             return true;
+        }
+
+        private static string[] ExactCellEvidenceReasonCodes(OpenXmlSheetFingerprintEvidence evidence)
+        {
+            var codes = evidence.Source.CoverageMessages
+                .Where(item => item.AffectsExactCellComparison)
+                .Select(item => item.Code)
+                .ToList();
+            if (evidence.CoverageCodes.Contains(
+                    OpenXmlSheetFingerprintCoverageCodes.InvalidCanonicalCellReference,
+                    StringComparer.Ordinal))
+            {
+                codes.Add(OpenXmlSheetFingerprintCoverageCodes.InvalidCanonicalCellReference);
+            }
+            return codes
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
         }
 
         private static OpenXmlProjectFinding GridFailure(

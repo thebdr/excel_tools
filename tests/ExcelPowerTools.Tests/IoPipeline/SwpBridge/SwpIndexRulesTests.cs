@@ -283,7 +283,8 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
         // ---- SWP content checks (§3.1 / §3.3 / §3.8) ----------------------------------------
 
         private static SwpRowSnapshot Bit(int row, string tagType, int entry, int bit,
-            string export = "x", string desc = "", string priority = "2", bool priorityIsText = false)
+            string export = "x", string desc = "", string priority = "2", bool priorityIsText = false,
+            string device = "")
         {
             return new SwpRowSnapshot
             {
@@ -295,6 +296,7 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
                 Desc1T = desc,
                 PriorityE = priority,
                 PriorityIsText = priorityIsText,
+                DeviceJ = device,
                 BlockHeaderRow = 15,
             };
         }
@@ -309,31 +311,72 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
         }
 
         [Fact]
-        public void Duplicated_exported_strings_in_a_block_are_flagged()
+        public void The_same_identity_twice_in_one_category_is_a_duplicate()
         {
             var log = new List<SwpLogEntry>();
             SwpContentChecks.Run(Index(
-                Bit(17, "DB_CABINETS_DIAG.Alarm1", 0, 0, desc: "MOTOR FAULT"),
-                Bit(50, "DB_CABINETS_DIAG.Warning1", 0, 5, desc: "MOTOR FAULT", priority: "3"),
+                Bit(17, "DB_CABINETS_DIAG.Alarm1", 0, 0, desc: "MOTOR FAULT", device: "-B1"),
+                Bit(18, "DB_CABINETS_DIAG.Alarm1", 0, 1, desc: "MOTOR FAULT", device: "-B1"),
                 Bit(51, "DB_CABINETS_DIAG.Warning1", 0, 6, desc: "OTHER", priority: "3"),
-                Bit(60, "DB_CABINETS_DIAG.Warning1", 0, 7, export: "0", desc: "MOTOR FAULT")), log);
+                Bit(60, "DB_CABINETS_DIAG.Alarm1", 0, 7, export: "0", desc: "MOTOR FAULT", device: "-B1")), log);
 
-            SwpLogEntry finding = Assert.Single(log, l => l.Message.Contains("both export"));
+            SwpLogEntry finding = Assert.Single(log, l => l.Message.Contains("are the same"));
             Assert.Contains("17", finding.Message);
-            Assert.Contains("50", finding.Message);
+            Assert.Contains("18", finding.Message);
+            Assert.Contains("alarm", finding.Message);
         }
 
         [Fact]
-        public void Exported_rows_on_bit_31_or_63_are_flagged()
+        public void Sixteen_safety_doors_sharing_one_sentence_are_not_duplicates()
         {
+            // The field case: one block, sixteen doors, all reading "SAFETY DOOR OPEN" and told
+            // apart by their DEVICE. The description alone was never the identity.
+            var rows = new List<SwpRowSnapshot>();
+            for (int i = 0; i < 16; i++)
+                rows.Add(Bit(3205 + i, "DB_CABINETS_DIAG.Alarm2", 0, 32 + i,
+                    desc: "SAFETY DOOR OPEN", device: "-B" + (i + 1)));
+
+            var log = new List<SwpLogEntry>();
+            SwpContentChecks.Run(Index(rows.ToArray()), log);
+
+            Assert.DoesNotContain(log, l => l.Message.Contains("are the same"));
+        }
+
+        [Fact]
+        public void The_same_string_as_an_alarm_and_as_a_warning_is_not_a_duplicate()
+        {
+            // The normal shape of a signal DECLASSED from alarm to warning. Reporting it buried
+            // the real duplicates.
             var log = new List<SwpLogEntry>();
             SwpContentChecks.Run(Index(
+                Bit(17, "DB_CABINETS_DIAG.Alarm1", 0, 0, desc: "CIRCUIT BREAKER TRIPPED 400V"),
+                Bit(50, "DB_CABINETS_DIAG.Warning1", 0, 5,
+                    desc: "CIRCUIT BREAKER TRIPPED 400V", priority: "3")), log);
+
+            Assert.DoesNotContain(log, l => l.Message.Contains("both export"));
+        }
+
+        [Fact]
+        public void A_forbidden_bit_is_reported_only_where_a_mnemonic_lands()
+        {
+            // An export tick on bit 31/63 is ignored by the plant; a MNEMONIC landing there is a
+            // signal nobody will ever see. Only the second is worth a finding.
+            SwpWorkbookIndex index = Index(
                 Bit(48, "DB_CABINETS_DIAG.Alarm1", 0, 31, desc: "A"),
                 Bit(49, "DB_CABINETS_DIAG.Alarm2", 0, 63, desc: "B"),
-                Bit(50, "DB_CABINETS_DIAG.Alarm2", 0, 62, desc: "C"),
-                Bit(51, "DB_CABINETS_DIAG.State", 0, 31, desc: "")), log);
+                Bit(50, "DB_CABINETS_DIAG.Alarm2", 0, 62, desc: "C"));
 
-            Assert.Equal(3, log.Count(l => l.Message.Contains("forbidden")));   // states count too
+            var targeted = new List<SwpLogEntry>();
+            SwpContentChecks.Run(index, targeted,
+                new HashSet<string> { SwpContentChecks.RowKeyOf("CABINET", 48) });
+            SwpLogEntry finding = Assert.Single(targeted, l => l.Message.Contains("forbidden"));
+            Assert.Contains("row 48", finding.Message);
+            Assert.Contains("takes a mnemonic", finding.Message);
+
+            // Row 49 sits on bit 63 with its export ticked and no mnemonic — silent.
+            var untargeted = new List<SwpLogEntry>();
+            SwpContentChecks.Run(index, untargeted, new HashSet<string>());
+            Assert.DoesNotContain(untargeted, l => l.Message.Contains("forbidden"));
         }
 
         [Theory]

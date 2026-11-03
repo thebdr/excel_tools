@@ -14,6 +14,14 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     public sealed class SwpBridgeSettings
     {
         public SwpPlantType PlantType = SwpPlantType.Msc;
+
+        /// <summary>The system's SWP ROOT — the folder holding the dated version folders. Empty
+        /// means "the folder this sidecar lives in", which is the default layout and what every
+        /// sidecar written before named sessions carries. It is filled only when a session was
+        /// SAVED ELSEWHERE (one IO list driving two SWPs wants two named sessions, and they cannot
+        /// both be the root's swp-bridge.json), so the ordinary sidecar stays self-locating and
+        /// survives having its whole system folder moved.</summary>
+        public string SwpRootFolder = "";
         public string CurrentVersionFolder = "";
         public string SwpFileName = "";
         public string ConfigFileName = "";
@@ -39,10 +47,40 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public int GroupIndex = 1;
         public string IncludeRegex = "";
         public string ExcludeRegex = "";
+        /// <summary>What every row does with CONFIG_PLANT's template text — one exclusive choice,
+        /// because a row cannot both keep the template whole and cut its tail off.</summary>
+        public SwpConfigMode ConfigMode = SwpConfigMode.ReplaceTemplateTail;
+
+        /// <summary>The destination-sheet exception to <see cref="ConfigMode"/> ("" = none), and
+        /// the mode a matching sheet takes — stored as that mode, never as a flip.</summary>
+        public string ConfigSheetRulePattern = "";
+        public SwpConfigMode ConfigSheetRuleMode = SwpConfigMode.KeepConfigText;
+
+        /// <summary>Mirrors of <see cref="ConfigMode"/> kept in the serialized schema: they were
+        /// the two independent switches this mode replaced, and an older add-in build reading a
+        /// newer sidecar still finds the setting it knows. Written from the mode on save; read
+        /// only when a sidecar predates <c>configMode</c>.</summary>
         public bool TrustConfigPlant;
         public bool UpdateDescriptionFormulas;
+
         public SwpMismatchMode MismatchMode = SwpMismatchMode.AppendToDescription;
+
+        /// <summary>The destination-sheet exception to <see cref="MismatchMode"/>: SWP sheets whose
+        /// name matches this regex take <see cref="FldSheetRuleMode"/> instead ("" = no exception).
+        /// One pattern suffices — the treatment is binary, so the regex names the sheets that take
+        /// the OTHER mode.</summary>
+        public string FldSheetRulePattern = "";
+
+        /// <summary>The treatment a matching sheet takes, stored as the mode it chose rather than
+        /// as a flip, so changing <see cref="MismatchMode"/> later never silently reverses it.</summary>
+        public SwpMismatchMode FldSheetRuleMode = SwpMismatchMode.Overwrite;
+
         public bool ApplyToVersionFolder;    // false = in-place with .bak
+
+        /// <summary>Files of the current version folder a NEW dated folder takes along, as a regex on
+        /// the file name ("" = only the SWP and CONFIG_PLANT). Case-insensitive; never lock files or
+        /// .bak copies (<see cref="SwpVersionFolders.FilesToCopy"/>).</summary>
+        public string VersionFolderCopyPattern = "";
 
         /// <summary>The second language's NAME in the global _Languages table ("" = none).</summary>
         public string SecondLanguage = "";
@@ -96,6 +134,23 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     {
         public const string SchemaToken = "swp-bridge-v1";
 
+        /// <summary>
+        /// A NEW session from an existing one ("Save as new…"): the same settings and file references,
+        /// dictionaries, glossary corrections and strobe templates — none of its history, so the queue
+        /// and the per-row decisions start empty. Copied through the file format itself, so the result is
+        /// exactly what its saved file reopens as, and it shares nothing with the source.
+        /// </summary>
+        public static SwpSidecarDocument FreshSession(SwpSidecarDocument source)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (!TryParse(Serialize(source), out SwpSidecarDocument copy, out string error))
+                throw new InvalidOperationException("the session could not be copied: " + error);
+            copy.Queue = new SwpQueue();
+            copy.Overrides = new List<SwpRowOverride>();
+            copy.LoadNotes = new List<string>();
+            return copy;
+        }
+
         public static string Serialize(SwpSidecarDocument document)
         {
             if (document == null) throw new ArgumentNullException(nameof(document));
@@ -110,6 +165,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             MiniJsonWriter.AppendString(json, "settings");
             json.Append(":{");
             MiniJsonWriter.Property(json, "plantType", s.PlantType.ToString(), first: true);
+            MiniJsonWriter.Property(json, "swpRootFolder", s.SwpRootFolder, first: false);
             MiniJsonWriter.Property(json, "currentVersionFolder", s.CurrentVersionFolder, first: false);
             MiniJsonWriter.Property(json, "swpFileName", s.SwpFileName, first: false);
             MiniJsonWriter.Property(json, "configFileName", s.ConfigFileName, first: false);
@@ -127,10 +183,20 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             MiniJsonWriter.NumberProperty(json, "groupIndex", s.GroupIndex, first: false);
             MiniJsonWriter.Property(json, "includeRegex", s.IncludeRegex, first: false);
             MiniJsonWriter.Property(json, "excludeRegex", s.ExcludeRegex, first: false);
-            MiniJsonWriter.BoolProperty(json, "trustConfigPlant", s.TrustConfigPlant, first: false);
-            MiniJsonWriter.BoolProperty(json, "updateDescriptionFormulas", s.UpdateDescriptionFormulas, first: false);
+            MiniJsonWriter.Property(json, "configMode", s.ConfigMode.ToString(), first: false);
+            MiniJsonWriter.Property(json, "configSheetRulePattern", s.ConfigSheetRulePattern, first: false);
+            MiniJsonWriter.Property(json, "configSheetRuleMode", s.ConfigSheetRuleMode.ToString(), first: false);
+            // The superseded switches, written from the mode so an older build reading this file
+            // still finds what it knows (and so a downgrade is not a silent behaviour change).
+            MiniJsonWriter.BoolProperty(json, "trustConfigPlant",
+                s.ConfigMode == SwpConfigMode.KeepConfigText, first: false);
+            MiniJsonWriter.BoolProperty(json, "updateDescriptionFormulas",
+                s.ConfigMode == SwpConfigMode.ReplaceTemplateTail, first: false);
             MiniJsonWriter.Property(json, "mismatchMode", s.MismatchMode.ToString(), first: false);
+            MiniJsonWriter.Property(json, "fldSheetRulePattern", s.FldSheetRulePattern, first: false);
+            MiniJsonWriter.Property(json, "fldSheetRuleMode", s.FldSheetRuleMode.ToString(), first: false);
             MiniJsonWriter.BoolProperty(json, "applyToVersionFolder", s.ApplyToVersionFolder, first: false);
+            MiniJsonWriter.Property(json, "versionFolderCopyPattern", s.VersionFolderCopyPattern, first: false);
             MiniJsonWriter.Property(json, "secondLanguage", s.SecondLanguage, first: false);
             MiniJsonWriter.Property(json, "glossaryPath1", s.GlossaryPath1, first: false);
             MiniJsonWriter.Property(json, "glossaryPath2", s.GlossaryPath2, first: false);
@@ -217,6 +283,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 MiniJsonWriter.Property(json, "statusNote", a.StatusNote, first: false);
                 MiniJsonWriter.Property(json, "queuedUtc", a.QueuedUtc, first: false);
                 MiniJsonWriter.Property(json, "appliedUtc", a.AppliedUtc, first: false);
+                MiniJsonWriter.Property(json, "fldGroup", a.FldGroup, first: false);
                 json.Append('}');
             }
             json.Append(']');
@@ -254,6 +321,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     s.PlantType = plantType;
                 else if (settings.Str("plantType").Length > 0)
                     result.LoadNotes.Add("Unknown plant type \"" + settings.Str("plantType") + "\" — Msc assumed.");
+                s.SwpRootFolder = settings.Str("swpRootFolder");
                 s.CurrentVersionFolder = settings.Str("currentVersionFolder");
                 s.SwpFileName = settings.Str("swpFileName");
                 s.ConfigFileName = settings.Str("configFileName");
@@ -275,6 +343,30 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 s.ExcludeRegex = settings.Str("excludeRegex");
                 s.TrustConfigPlant = settings.BoolOf("trustConfigPlant", false);
                 s.UpdateDescriptionFormulas = settings.BoolOf("updateDescriptionFormulas", false);
+                if (TryParseEnum(settings.Str("configMode"), out SwpConfigMode configMode))
+                {
+                    s.ConfigMode = configMode;
+                }
+                else
+                {
+                    // A sidecar from before the exclusive mode. "Never overwrite" wins if it was
+                    // set — it was the one that took precedence in the old code too. Neither set
+                    // meant the composed description was stacked ONTO the template's tail, which
+                    // is the shape the mode exists to end: those workspaces land on the rebuild,
+                    // and the load note says so rather than changing behaviour silently.
+                    s.ConfigMode = s.TrustConfigPlant
+                        ? SwpConfigMode.KeepConfigText
+                        : SwpConfigMode.ReplaceTemplateTail;
+                    if (!s.TrustConfigPlant && !s.UpdateDescriptionFormulas)
+                        result.LoadNotes.Add(
+                            "This session predates the CONFIG_PLANT mode and had neither switch set — " +
+                            "its descriptions were stacked after the template's own trailing text. It now " +
+                            "reads \"replace the template's trailing text with the row description\"; " +
+                            "switch it to \"never overwrite\" in setup if that is not what you want.");
+                }
+                s.ConfigSheetRulePattern = settings.Str("configSheetRulePattern");
+                if (TryParseEnum(settings.Str("configSheetRuleMode"), out SwpConfigMode configRuleMode))
+                    s.ConfigSheetRuleMode = configRuleMode;
                 if (TryParseEnum(settings.Str("mismatchMode"), out SwpMismatchMode mismatchMode))
                     s.MismatchMode = mismatchMode;
                 else
@@ -282,7 +374,12 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     s.MismatchMode = settings.BoolOf("mismatchAppendsLabel", true)
                         ? SwpMismatchMode.AppendToDescription
                         : SwpMismatchMode.Overwrite;
+                s.FldSheetRulePattern = settings.Str("fldSheetRulePattern");
+                // Absent in pre-rule sidecars; the mode only matters when a pattern is present.
+                if (TryParseEnum(settings.Str("fldSheetRuleMode"), out SwpMismatchMode fldSheetRuleMode))
+                    s.FldSheetRuleMode = fldSheetRuleMode;
                 s.ApplyToVersionFolder = settings.BoolOf("applyToVersionFolder", false);
+                s.VersionFolderCopyPattern = settings.Str("versionFolderCopyPattern");
                 s.SecondLanguage = settings.Str("secondLanguage");
                 s.GlossaryPath1 = settings.Str("glossaryPath1");
                 s.GlossaryPath2 = settings.Str("glossaryPath2");
@@ -379,6 +476,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     StatusNote = entry.Str("statusNote"),
                     QueuedUtc = entry.Str("queuedUtc"),
                     AppliedUtc = entry.Str("appliedUtc"),
+                    FldGroup = entry.Str("fldGroup"),
                 });
             }
 

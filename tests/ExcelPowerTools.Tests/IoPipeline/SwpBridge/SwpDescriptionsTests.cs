@@ -235,13 +235,170 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
         [Fact]
         public void Blank_language_two_falls_back_to_language_one()
         {
-            Assert.Equal("ENGLISH TEXT PART", Compose(Entry("ENGLISH TEXT", "PART")).Desc2);
+            var r = Compose(Entry("ENGLISH TEXT", "PART"));
+            Assert.Equal("ENGLISH TEXT PART", r.Desc2);
+            // Language-1 text in the language-2 cell is flagged: a single-language SCADA shows it.
+            Assert.True(r.Desc2FromLanguage1);
         }
 
         [Fact]
         public void Spaces_only_language_two_also_falls_back()
         {
-            Assert.Equal("EN X", Compose(Entry("EN", "X", "  ", " ")).Desc2);
+            var r = Compose(Entry("EN", "X", "  ", " "));
+            Assert.Equal("EN X", r.Desc2);
+            Assert.True(r.Desc2FromLanguage1);
+        }
+
+        [Fact]
+        public void A_real_language_two_is_not_flagged()
+        {
+            var r = Compose(Entry("CIRCUIT BREAKER", "COOLING FAN", "DISJONCTEUR", "VENTILATEUR"));
+            Assert.False(r.Desc2FromLanguage1);
+            Assert.False(r.Desc2VariablePartFromLanguage1);
+        }
+
+        // ---- the variable part beside a glossary translation --------------------------------
+
+        private static SwpDescriptions.Context FrenchGlossary(bool translateAlways) =>
+            new SwpDescriptions.Context
+            {
+                GlossaryPairs = new List<SwpGlossaryPair>
+                {
+                    Pair("CIRCUIT BREAKER TRIPPED", "DISJONCTEUR MAGNÉTOTHERMIQUE DÉCLENCHÉ", "TS_020"),
+                },
+                GlossaryTranslateAlways = translateAlways,
+            };
+
+        [Fact]
+        public void A_permanent_part_match_takes_the_io_lists_language_two_variable_part()
+        {
+            // FVZ induction, card R1.S2.C1 row 9: the glossary translates the permanent part and the
+            // IO list translates the variable one — a French-only SCADA must read both in French.
+            var r = SwpDescriptions.Compose(Entry(
+                "CIRCUIT BREAKER TRIPPED", "24V IM 155 AND I/O MODULE",
+                "DISJONCTEUR DÉCLENCHÉ", "24V IM 155 ET MODULES I/O"), FrenchGlossary(translateAlways: true));
+
+            Assert.Equal("DISJONCTEUR MAGNÉTOTHERMIQUE DÉCLENCHÉ 24V IM 155 ET MODULES I/O", r.Desc2);
+            Assert.False(r.Desc2VariablePartFromLanguage1);
+            Assert.False(r.Desc2FromLanguage1);
+        }
+
+        [Fact]
+        public void Without_a_language_two_variable_part_language_ones_rides_along_and_is_flagged()
+        {
+            var r = SwpDescriptions.Compose(Entry(
+                "CIRCUIT BREAKER TRIPPED", "24V IM 155 AND I/O MODULE", "", ""), FrenchGlossary(translateAlways: false));
+
+            Assert.Equal("DISJONCTEUR MAGNÉTOTHERMIQUE DÉCLENCHÉ 24V IM 155 AND I/O MODULE", r.Desc2);
+            Assert.True(r.Desc2VariablePartFromLanguage1);
+        }
+
+        [Fact]
+        public void The_language_two_dictionary_shortens_the_variable_part_it_contributes()
+        {
+            var r = SwpDescriptions.Compose(Entry(
+                    "CIRCUIT BREAKER TRIPPED", "400V INDUCTION LINE 1", "DISJONCTEUR DÉCLENCHÉ", "400V LIGNE D'INDUCTION 1"),
+                new SwpDescriptions.Context
+                {
+                    Dictionary2 = Dict("LIGNE D'INDUCTION", "L.IND."),
+                    GlossaryPairs = FrenchGlossary(true).GlossaryPairs,
+                    GlossaryTranslateAlways = true,
+                });
+
+            Assert.Equal("DISJONCTEUR MAGNÉTOTHERMIQUE DÉCLENCHÉ 400V L.IND. 1", r.Desc2);
+        }
+
+        private static SwpDescriptions.Context FvtSafetyContext(List<SwpDictionaryEntry> d1, List<SwpDictionaryEntry> d2) =>
+            new SwpDescriptions.Context
+            {
+                Dictionary1 = d1,
+                Dictionary2 = d2,
+                GlossaryPairs = new List<SwpGlossaryPair>
+                {
+                    Pair("EMERGENCY PUSH BUTTON PRESSED", "ARRÊT D'URGENCE AVEC BOUTON COUP DE POING", "TS_002"),
+                    Pair("SWITCH DISCONNECTOR IS OPEN", "LE SECTIONNEUR EST OUVERT", "TS_004"),
+                },
+                GlossaryTranslateAlways = true,
+            };
+
+        /// <summary>
+        /// FVT safety list, 2026-09-22 (CABINETAL00427, row 2364): both variable parts read
+        /// "CH1/CH2" and the _Dictionary deletes the channel markers on both sides. The language-2
+        /// part came out empty and the code took that for "the IO list has no language-2 part",
+        /// riding language 1's "CH1/CH2" in RAW — the one path with no dictionary at all — so
+        /// Description 2 read "… COUP DE POING CH1/CH2" while Description 1 was clean. A part the
+        /// IO list WROTE counts as present whatever the dictionary leaves of it.
+        /// </summary>
+        [Fact]
+        public void A_language_two_variable_part_the_dictionary_empties_never_lets_language_ones_ride_raw()
+        {
+            List<SwpDictionaryEntry> channels = Dict("CH1/", "", "CH1\\", "", "CH1", "", "CH2", "");
+            var r = SwpDescriptions.Compose(
+                Entry("EMERGENCY PUSH BUTTON PRESSED", "CH1/CH2", "ARRÊT D’URGENCE AVEC BOUTON COUP DE POING", "CH1/CH2"),
+                FvtSafetyContext(channels, channels));
+
+            Assert.Equal("EMERGENCY PUSH BUTTON PRESSED ", r.Desc1);
+            Assert.Equal("ARRÊT D'URGENCE AVEC BOUTON COUP DE POING ", r.Desc2);
+            Assert.False(r.Desc2VariablePartFromLanguage1);
+            Assert.Equal("", r.Desc2RidingText);
+
+            // The 188 sibling rows with a device after the markers keep it, on both sides.
+            r = SwpDescriptions.Compose(
+                Entry("EMERGENCY PUSH BUTTON PRESSED", "CH1\\CH2 =ES-0035", "ARRÊT D’URGENCE AVEC BOUTON COUP DE POING", " CH1\\CH2=ES-0035"),
+                FvtSafetyContext(channels, channels));
+            Assert.Equal("EMERGENCY PUSH BUTTON PRESSED  =ES-0035", r.Desc1);
+            Assert.Equal("ARRÊT D'URGENCE AVEC BOUTON COUP DE POING  =ES-0035", r.Desc2);
+        }
+
+        [Fact]
+        public void Language_ones_riding_variable_part_passes_dictionary_one_then_dictionary_two()
+        {
+            // No language-2 variable part at all: language 1's rides — through ITS dictionary…
+            var r = SwpDescriptions.Compose(
+                Entry("SWITCH DISCONNECTOR IS OPEN", "CH1/CH2 =ES-2200", "", ""),
+                FvtSafetyContext(Dict("CH1/", "", "CH2", ""), null));
+            Assert.Equal("LE SECTIONNEUR EST OUVERT  =ES-2200", r.Desc2);
+            Assert.True(r.Desc2VariablePartFromLanguage1);
+            Assert.Equal("=ES-2200", r.Desc2RidingText);
+
+            // …and through language 2's too, because it lands in Description 2.
+            r = SwpDescriptions.Compose(
+                Entry("SWITCH DISCONNECTOR IS OPEN", "CH1/CH2 =ES-2200", "", ""),
+                FvtSafetyContext(null, Dict("CH1/", "", "CH2", "")));
+            Assert.Equal("LE SECTIONNEUR EST OUVERT  =ES-2200", r.Desc2);
+            Assert.Equal("=ES-2200", r.Desc2RidingText);
+
+            // Rules that delete the whole part leave nothing to ride — and nothing to flag.
+            r = SwpDescriptions.Compose(
+                Entry("SWITCH DISCONNECTOR IS OPEN", "CH1/CH2", "", ""),
+                FvtSafetyContext(Dict("CH1/", "", "CH2", ""), null));
+            Assert.Equal("LE SECTIONNEUR EST OUVERT ", r.Desc2);
+            Assert.False(r.Desc2VariablePartFromLanguage1);
+        }
+
+        [Fact]
+        public void The_whole_description_fallback_to_language_one_passes_dictionary_two_except_on_bus_modules()
+        {
+            // No glossary, no language 2 at all: Description 2 repeats Description 1, cleaned by
+            // the language-2 rules as well — it is what the single-language SCADA shows.
+            var r = Compose(Entry("EMERGENCY PUSH BUTTON PRESSED", "CH1/CH2 =ES-0035"),
+                d1: null, d2: Dict("CH1/CH2 ", ""));
+            Assert.Equal("EMERGENCY PUSH BUTTON PRESSED CH1/CH2 =ES-0035", r.Desc1);
+            Assert.Equal("EMERGENCY PUSH BUTTON PRESSED =ES-0035", r.Desc2);
+            Assert.True(r.Desc2FromLanguage1);
+
+            // A bus module's phrase + [name - ip] is identity: no dictionary touches it.
+            r = Compose(Entry("PROFINET SWITCH", pnName: "n0015-tric-aec01-K28001", pnIp: "192.168.20.15"),
+                d1: null, d2: Dict("K28001", "X"));
+            Assert.Equal("FIELD BUS MODULE FAILURE [n0015-tric-aec01-K28001 - 192.168.20.15]", r.Desc2);
+        }
+
+        [Fact]
+        public void A_permanent_part_with_no_variable_part_anywhere_is_not_flagged()
+        {
+            var r = SwpDescriptions.Compose(Entry("CIRCUIT BREAKER TRIPPED"), FrenchGlossary(true));
+            Assert.Equal("DISJONCTEUR MAGNÉTOTHERMIQUE DÉCLENCHÉ ", r.Desc2);
+            Assert.False(r.Desc2VariablePartFromLanguage1);
         }
 
         [Fact]

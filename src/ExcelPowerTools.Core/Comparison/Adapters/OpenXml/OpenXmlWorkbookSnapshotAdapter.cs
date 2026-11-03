@@ -25,6 +25,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
         public const int MaxPackageEntries = 10000;
         public const long MaxCharactersInPart = 128L * 1024 * 1024;
         public const int MaxTableFormulaObservations = 100000;
+        public const long MaxPhysicalCellElementsPerWorkbook = 2000000L;
 
         private const long MaxCentralDirectoryBytes = 16L * 1024 * 1024;
         private const long MaxDeclaredUncompressedBytes = 1024L * 1024 * 1024;
@@ -37,6 +38,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
                 revisionId,
                 exactSourceBytes,
                 OpenXmlFormulaMetadataLimits.Default,
+                MaxPhysicalCellElementsPerWorkbook,
                 cancellationToken);
 
         internal static OpenXmlWorkbookSnapshot FromBytesForTesting(
@@ -44,17 +46,37 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
             byte[] exactSourceBytes,
             OpenXmlFormulaMetadataLimits metadataLimits,
             CancellationToken cancellationToken = default(CancellationToken)) =>
-            FromBytesCore(revisionId, exactSourceBytes, metadataLimits, cancellationToken);
+            FromBytesCore(
+                revisionId,
+                exactSourceBytes,
+                metadataLimits,
+                MaxPhysicalCellElementsPerWorkbook,
+                cancellationToken);
+
+        internal static OpenXmlWorkbookSnapshot FromBytesWithCellLimitForTesting(
+            string revisionId,
+            byte[] exactSourceBytes,
+            long maxPhysicalCellElements,
+            CancellationToken cancellationToken = default(CancellationToken)) =>
+            FromBytesCore(
+                revisionId,
+                exactSourceBytes,
+                OpenXmlFormulaMetadataLimits.Default,
+                maxPhysicalCellElements,
+                cancellationToken);
 
         private static OpenXmlWorkbookSnapshot FromBytesCore(
             string revisionId,
             byte[] exactSourceBytes,
             OpenXmlFormulaMetadataLimits metadataLimits,
+            long maxPhysicalCellElements,
             CancellationToken cancellationToken)
         {
             if (string.IsNullOrEmpty(revisionId))
                 throw new ArgumentException("A revision occurrence ID is required.", nameof(revisionId));
             if (exactSourceBytes == null) throw new ArgumentNullException(nameof(exactSourceBytes));
+            if (maxPhysicalCellElements <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maxPhysicalCellElements));
             if (exactSourceBytes.Length > MaxSourcePackageBytes)
                 throw new InvalidDataException(
                     "The OOXML package exceeds the current safe in-memory adapter limit. " +
@@ -88,6 +110,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
                     byteContentId,
                     document,
                     metadataLimits,
+                    maxPhysicalCellElements,
                     cancellationToken);
             }
         }
@@ -181,6 +204,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
             string byteContentId,
             SpreadsheetDocument document,
             OpenXmlFormulaMetadataLimits metadataLimits,
+            long maxPhysicalCellElements,
             CancellationToken cancellationToken)
         {
             WorkbookPart workbookPart = document.WorkbookPart;
@@ -193,6 +217,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
             var formulaMetadata = new OpenXmlFormulaMetadataCatalog(workbookPart, metadataLimits);
             var workbookCoverage = new List<OpenXmlCoverageMessage>();
             var sheets = new List<OpenXmlWorksheetSnapshot>();
+            var cellReadBudget = new WorkbookCellReadBudget(maxPhysicalCellElements);
 
             InventoryUnmodeledWorkbookMetadata(workbookPart, workbookCoverage);
 
@@ -249,6 +274,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
                         metadataLimits,
                         worksheetScopeCount,
                         dateSystem,
+                        cellReadBudget,
                         cancellationToken));
                 }
             }
@@ -453,6 +479,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
             OpenXmlFormulaMetadataLimits formulaLimits,
             int worksheetScopeCount,
             ExcelDateSystem dateSystem,
+            WorkbookCellReadBudget cellReadBudget,
             CancellationToken cancellationToken)
         {
             string name = sheet.Name == null ? "" : sheet.Name.Value;
@@ -464,13 +491,19 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
             if (string.IsNullOrEmpty(name))
                 coverage.Add(Coverage(OpenXmlCoverageCodes.MissingSheetName, "The sheet has no name.", true, name));
             if (!sheetId.HasValue)
-                coverage.Add(Coverage(OpenXmlCoverageCodes.MissingSheetId, "The sheet has no sheetId.", true, name));
+                coverage.Add(Coverage(
+                    OpenXmlCoverageCodes.MissingSheetId,
+                    "The sheet has no sheetId.",
+                    true,
+                    name,
+                    affectsExactCellComparison: false));
             if (!visibilityKnown)
                 coverage.Add(Coverage(
                     OpenXmlCoverageCodes.UnknownSheetVisibility,
                     "The sheet uses an unknown visibility state.",
                     true,
-                    name));
+                    name,
+                    affectsExactCellComparison: false));
 
             string snapshotRevisionId = revisionId + "/sheet:" +
                                         (string.IsNullOrEmpty(relationshipId)
@@ -596,30 +629,25 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
                 foreach (Cell cell in sheetDataParts.SelectMany(data => data.Descendants<Cell>()))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    cellReadBudget.Observe();
                     string rawReference = GetAttributeValue(cell, "r");
                     string cellReference;
                     if (!TryNormalizeCellReference(rawReference, out cellReference))
                     {
-                        coverage.Add(Coverage(
+                        cellCoverageLimiter.Add(
                             OpenXmlCoverageCodes.InvalidCellReference,
                             "A cell has a missing, malformed, or out-of-grid reference: '" +
                             Abbreviate(rawReference) + "'.",
-                            true,
-                            name,
-                            rawReference,
-                            partUri));
+                            rawReference);
                         continue;
                     }
 
                     if (!observedReferences.Add(cellReference))
                     {
-                        coverage.Add(Coverage(
+                        cellCoverageLimiter.Add(
                             OpenXmlCoverageCodes.DuplicateCellReference,
                             "The worksheet contains more than one physical cell at " + cellReference + ".",
-                            true,
-                            name,
-                            cellReference,
-                            partUri));
+                            cellReference);
                         continue;
                     }
 
@@ -1354,7 +1382,10 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
                             coverage);
                     }
 
-                    DateStyleKind styleKind = ResolveDateStyle(
+                    // Number formats are presentation metadata. Retain an invalid-style coverage diagnostic for
+                    // broad package auditing, but never let a date-looking format change the exact stored numeric
+                    // value or calculated-value channel.
+                    ResolveDateStyle(
                         cell,
                         dateStyles,
                         cellReference,
@@ -1362,9 +1393,7 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
                         partUri,
                         cellCoverageLimiter,
                         coverage);
-                    return styleKind == DateStyleKind.Date
-                        ? CanonicalValue.DateSerial(number, dateSystem)
-                        : CanonicalValue.Number(number);
+                    return CanonicalValue.Number(number);
 
                 default:
                     return CoverageValue(
@@ -1399,7 +1428,8 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
                     OpenXmlCoverageCodes.InvalidCellStyleIndex,
                     "Cell style index '" + Abbreviate(rawStyleIndex) +
                     "' is missing from the workbook style table; the numeric value is retained as a number.",
-                    cellReference);
+                    cellReference,
+                    affectsExactCellComparison: false);
                 return DateStyleKind.Number;
             }
 
@@ -1786,6 +1816,28 @@ namespace ExcelPowerTools.Core.Comparison.Adapters.OpenXml
         {
             if (value == null) return "";
             return value.Length <= 80 ? value : value.Substring(0, 77) + "...";
+        }
+
+        private sealed class WorkbookCellReadBudget
+        {
+            private readonly long _maximum;
+            private long _observed;
+
+            internal WorkbookCellReadBudget(long maximum)
+            {
+                _maximum = maximum;
+            }
+
+            internal void Observe()
+            {
+                _observed++;
+                if (_observed <= _maximum) return;
+                throw new InvalidDataException(
+                    "The workbook contains more than " +
+                    _maximum.ToString("N0", CultureInfo.InvariantCulture) +
+                    " physical cell elements and exceeds the safe in-memory parser limit. " +
+                    "Malformed, duplicate, blank, and formatting-only cells count at this boundary.");
+            }
         }
 
         private sealed class CellCoverageLimiter

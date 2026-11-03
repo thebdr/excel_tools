@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using ExcelPowerTools.Core.Files;
 using ExcelPowerTools.Core.IoPipeline.SwpBridge;
@@ -14,18 +13,24 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
     /// <summary>
     /// Applies the included pending actions to the SWP — headless, three-way checked, verified
     /// before written, atomic on disk. Two modes: in-place on the current file (with .bak), or
-    /// version-folder (the next NN_dd-MMM-yyyy sibling is created, SWP + CONFIG_PLANT copied,
-    /// the COPY patched — the original is never written). Statuses flip only after the disk
-    /// write returns; a findings .txt lands next to the SWP; the workspace then rebuilds.
+    /// version-folder (the next NN_dd-MMM-yyyy sibling is created, the patched SWP written there,
+    /// CONFIG_PLANT and every file matching the session's copy pattern copied along — the original
+    /// folder is never written). Statuses flip only after the disk write returns; a findings .txt
+    /// lands next to the SWP; the workspace then rebuilds.
     /// </summary>
     internal static class SwpBridgeApplyEngine
     {
         public static void Apply(dynamic app, SwpBridgeSession session)
         {
             List<SwpAction> included = session.Queue.IncludedPending();
+            List<SwpAction> heldBack = session.Queue.HeldBack();
+            string heldBackNote = heldBack.Count == 0
+                ? ""
+                : "\n\n" + heldBack.Count + " included action(s) held back: a device blank and the label " +
+                  "writes it depends on apply together, and one member of that group is excluded or in conflict.";
             if (included.Count == 0)
             {
-                Dialogs.Info("Nothing to apply — no included pending action.", "SWP Bridge");
+                Dialogs.Info("Nothing to apply — no included pending action." + heldBackNote, "SWP Bridge");
                 return;
             }
 
@@ -49,7 +54,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             string question = "Apply " + included.Count + " action(s)?" + summary + "\n\n" +
                 (versionFolder
                     ? "Mode: a NEW dated version folder is created and patched; the current file stays untouched."
-                    : "Mode: in-place on\n" + sourcePath + "\n(a .bak of the previous state is kept).");
+                    : "Mode: in-place on\n" + sourcePath + "\n(a .bak of the previous state is kept).") +
+                heldBackNote;
             if (!Dialogs.OkCancel(question, "SWP Bridge — apply")) return;
 
             // TOCTOU: the file must still be what the diff was computed against.
@@ -70,6 +76,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             session.BuildLog.AddRange(log);
 
             string targetPath = sourcePath;
+            var copiedAlong = new List<string>();
+            var notCopied = new List<string>();
             int applied = 0, conflicts = 0, external = 0;
             foreach (SwpXlsxPatcher.Outcome outcome in result.Outcomes)
             {
@@ -92,7 +100,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
                 if (versionFolder)
                 {
-                    targetPath = CreateNextVersionFolder(session);
+                    targetPath = CreateNextVersionFolder(session, copiedAlong, notCopied);
                     AtomicFileStore.WriteWithBackup(targetPath, result.PatchedBytes);
                 }
                 else
@@ -120,12 +128,18 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     outcome.Result == SwpActionStatus.AppliedExternally)
                     outcome.Action.AppliedUtc = appliedUtc;
             }
+            foreach (string name in copiedAlong)
+                session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Info,
+                    "copied along into the new version folder: " + name));
+            foreach (string name in notCopied)
+                session.BuildLog.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "NOT copied into the new version folder: " + name));
             session.SaveSidecarNow();
             ExportLogText(session, targetPath);
 
             string message = "Applied " + applied + " · already there " + external + " · conflicts " + conflicts +
                 (versionFolder && result.AppliedCount > 0
-                    ? "\n\nNew version:\n" + targetPath
+                    ? "\n\nNew version:\n" + targetPath + CopiedAlongSummary(copiedAlong, notCopied)
                     : "") +
                 (conflicts > 0 ? "\n\nConflicted actions stay queued — the refreshed diff shows the new reality." : "");
             Dialogs.Info(message, "SWP Bridge — apply");
@@ -156,17 +170,21 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
         /// <summary>
         /// The legacy folder convention: NN_dd-MMM-yyyy siblings under the SWP root, NN one past
-        /// the highest existing. SWP and CONFIG_PLANT are copied in (the external [1] link is
-        /// folder-relative, so the copy keeps resolving); the session then works on the new copy.
+        /// the highest existing. CONFIG_PLANT is copied in (the external [1] link is folder-relative,
+        /// so the copy keeps resolving), then every file the session's copy pattern matches — the
+        /// other SWP an IO list drives, typically — so the new folder is a complete version rather
+        /// than one workbook and a hole. A file that fails to copy is reported, never fatal: the
+        /// patched SWP is what the apply exists for. The session then works on the new folder.
         /// </summary>
-        private static string CreateNextVersionFolder(SwpBridgeSession session)
+        private static string CreateNextVersionFolder(SwpBridgeSession session,
+            List<string> copiedAlong, List<string> notCopied)
         {
             string root = session.SwpRootFolder;
             int highest = 0;
             foreach (string dir in Directory.GetDirectories(root))
             {
-                Match m = Regex.Match(Path.GetFileName(dir), @"^(\d+)_");
-                if (m.Success && int.TryParse(m.Groups[1].Value, out int n) && n > highest) highest = n;
+                int? n = SwpVersionFolders.Number(Path.GetFileName(dir));
+                if (n.HasValue && n.Value > highest) highest = n.Value;
             }
 
             string folderName = (highest + 1).ToString("00", CultureInfo.InvariantCulture) + "_" +
@@ -179,8 +197,41 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             if (!string.IsNullOrEmpty(configName) && File.Exists(Path.Combine(oldFolder, configName)))
                 File.Copy(Path.Combine(oldFolder, configName), Path.Combine(folder, configName), overwrite: true);
 
+            string pattern = session.Settings.VersionFolderCopyPattern ?? "";
+            if (pattern.Trim().Length > 0 && Directory.Exists(oldFolder))
+            {
+                var names = new List<string>();
+                foreach (string file in Directory.GetFiles(oldFolder)) names.Add(Path.GetFileName(file));
+                List<string> toCopy = SwpVersionFolders.FilesToCopy(names, pattern,
+                    session.Settings.SwpFileName, configName, out string error);
+                if (error.Length > 0)
+                    notCopied.Add("every other file — the copy regex /" + pattern + "/ does not parse (" + error + ")");
+                foreach (string name in toCopy)
+                {
+                    try
+                    {
+                        File.Copy(Path.Combine(oldFolder, name), Path.Combine(folder, name), overwrite: false);
+                        copiedAlong.Add(name);
+                    }
+                    catch (Exception ex)
+                    {
+                        notCopied.Add(name + " (" + ex.Message + ")");
+                    }
+                }
+            }
+
             session.Settings.CurrentVersionFolder = folderName;
             return Path.Combine(folder, session.Settings.SwpFileName);
+        }
+
+        private static string CopiedAlongSummary(List<string> copiedAlong, List<string> notCopied)
+        {
+            var text = new StringBuilder();
+            if (copiedAlong.Count > 0)
+                text.Append("\n\nAlso copied into it:\n  · ").Append(string.Join("\n  · ", copiedAlong));
+            if (notCopied.Count > 0)
+                text.Append("\n\nNOT copied:\n  · ").Append(string.Join("\n  · ", notCopied));
+            return text.ToString();
         }
 
         private static void ExportLogText(SwpBridgeSession session, string swpPath)

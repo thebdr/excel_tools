@@ -52,6 +52,7 @@ namespace ExcelPowerTools.Core.Comparison.Diff
         public string AfterText { get; }
         public CanonicalValue BeforeValue { get; }
         public CanonicalValue AfterValue { get; }
-        public bool IsSecondary => Aspect == CellChangeAspect.CachedResult || Aspect == CellChangeAspect.Presence;
+        public bool IsSecondary => Aspect == CellChangeAspect.Presence ||
+                                   Aspect == CellChangeAspect.FormulaStructure;
     }
 }

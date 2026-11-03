@@ -126,10 +126,13 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
 
             CsvDocument doc;
             CsvColumnsMap map;
+            PlantCsvKind kind = actions.Count > 0 && actions[0].Target == BridgeTarget.OutputsCsv
+                ? PlantCsvKind.Outputs
+                : PlantCsvKind.Inputs;
             try
             {
                 doc = CsvFile.Load(bytes);
-                map = CsvColumnsMap.Locate(doc);
+                map = CsvColumnsMap.Locate(doc, kind);
             }
             catch (Exception ex)
             {

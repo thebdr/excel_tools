@@ -1319,14 +1319,15 @@ namespace ExcelPowerTools.Core.Comparison.Persistence
             var widths = new ContentWidthAccumulator();
             widths.Add("Comparison legend");
             widths.Add("Channel", "Meaning");
-            widths.Add("Formula", "Primary exact formula-text or formula-structure change");
-            widths.Add("Value", "Primary exact typed-value change");
-            widths.Add("Cached result", "Secondary stored result; never merged independently");
-            widths.Add("Structure", "Sheet, row, or column identity evidence; not mergeable in v1");
+            widths.Add("Value", "Exact stored typed-value change");
+            widths.Add("Calculated value", "Exact stored result last calculated by the workbook");
+            widths.Add("Formula", "Exact stored formula text or formula metadata change");
+            widths.Add("Structure", "Sheet, row, or column alignment context for the three content channels");
             widths.Add("Equivalent", "Quiet classification only; exact evidence remains visible");
             widths.Add("Reverted", "Master returned to an earlier exact state after an intermediate change");
             widths.Add("Conflict", "Sibling revisions changed the same logical subject differently");
             widths.Add("Branch-only", "Exact change exists outside the confirmed master lineage");
+            widths.Add("Scope", "Only values, calculated values, and formulas are compared as cell content");
             widths.Add("Important", "Color is never the only signal; labels and identifiers are authoritative.");
             using (XmlWriter writer = CreateWorksheetWriter(part, budget))
             {
@@ -1336,15 +1337,16 @@ namespace ExcelPowerTools.Core.Comparison.Persistence
                 writer.WriteStartElement("sheetData", SpreadsheetNamespace);
                 WriteRow(writer, 1, "Comparison legend");
                 WriteRow(writer, 3, "Channel", "Meaning");
-                WriteRow(writer, 4, "Formula", "Primary exact formula-text or formula-structure change");
-                WriteRow(writer, 5, "Value", "Primary exact typed-value change");
-                WriteRow(writer, 6, "Cached result", "Secondary stored result; never merged independently");
-                WriteRow(writer, 7, "Structure", "Sheet, row, or column identity evidence; not mergeable in v1");
+                WriteRow(writer, 4, "Value", "Exact stored typed-value change");
+                WriteRow(writer, 5, "Calculated value", "Exact stored result last calculated by the workbook");
+                WriteRow(writer, 6, "Formula", "Exact stored formula text or formula metadata change");
+                WriteRow(writer, 7, "Structure", "Sheet, row, or column alignment context for the three content channels");
                 WriteRow(writer, 8, "Equivalent", "Quiet classification only; exact evidence remains visible");
                 WriteRow(writer, 9, "Reverted", "Master returned to an earlier exact state after an intermediate change");
                 WriteRow(writer, 10, "Conflict", "Sibling revisions changed the same logical subject differently");
                 WriteRow(writer, 11, "Branch-only", "Exact change exists outside the confirmed master lineage");
-                WriteRow(writer, 13, "Important", "Color is never the only signal; labels and identifiers are authoritative.");
+                WriteRow(writer, 13, "Scope", "Only values, calculated values, and formulas are compared as cell content");
+                WriteRow(writer, 14, "Important", "Color is never the only signal; labels and identifiers are authoritative.");
                 writer.WriteEndElement();
                 writer.WriteEndElement();
                 writer.WriteEndDocument();

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -180,7 +181,10 @@ namespace ExcelPowerTools.Commands
 
                 cancellationToken.ThrowIfCancellationRequested();
                 progress?.Report(new ComparisonPreviewProgress(
-                    "Comparing exact cells", "Comparing same-name sheets, formulas, typed values, and cached results", 73, true));
+                    "Comparing exact cells",
+                    "Comparing stored values, saved calculated values, and formulas on same-name sheets",
+                    73,
+                    true));
                 ExactWorkbookComparisonResult comparison = ExactWorkbookComparisonEngine.Compare(
                     beforeSnapshot, afterSnapshot, cancellationToken: cancellationToken);
 
@@ -697,9 +701,17 @@ namespace ExcelPowerTools.Commands
                         projections);
                 }
 
+                var formulaTextSubjects = new HashSet<string>(
+                    sheet.Changes
+                        .Where(item => item.Aspect == CellChangeAspect.Formula)
+                        .Select(item => item.SubjectKey),
+                    StringComparer.Ordinal);
                 for (int changeIndex = 0; changeIndex < sheet.Changes.Count; changeIndex++)
                 {
                     AtomicCellChange change = sheet.Changes[changeIndex];
+                    if (change.Aspect == CellChangeAspect.FormulaStructure &&
+                        formulaTextSubjects.Contains(change.SubjectKey))
+                        continue;
                     AddProjection(
                         projectId,
                         sheet.SheetName,
@@ -718,10 +730,18 @@ namespace ExcelPowerTools.Commands
             IList<PreviewChange> projections,
             CancellationToken cancellationToken)
         {
+            var formulaTextSubjects = new HashSet<string>(
+                changes
+                    .Where(item => item.Aspect == CellChangeAspect.Formula)
+                    .Select(item => item.SubjectKey),
+                StringComparer.Ordinal);
             for (int i = 0; i < changes.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 AtomicCellChange change = changes[i];
+                if (change.Aspect == CellChangeAspect.FormulaStructure &&
+                    formulaTextSubjects.Contains(change.SubjectKey))
+                    continue;
                 AddProjection(
                     projectId,
                     "Delimited data",
@@ -765,9 +785,9 @@ namespace ExcelPowerTools.Commands
             switch (aspect)
             {
                 case CellChangeAspect.Formula: return "Formula";
-                case CellChangeAspect.FormulaStructure: return "Formula structure";
+                case CellChangeAspect.FormulaStructure: return "Formula";
                 case CellChangeAspect.Value: return "Value";
-                case CellChangeAspect.CachedResult: return "Cached result";
+                case CellChangeAspect.CachedResult: return "Calculated value";
                 default: return "Cell presence";
             }
         }

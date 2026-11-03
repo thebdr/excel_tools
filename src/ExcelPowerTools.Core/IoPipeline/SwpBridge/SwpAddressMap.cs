@@ -5,6 +5,12 @@ using System.Globalization;
 namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 {
     /// <summary>
+    /// SUPERSEDED by <see cref="SwpMnemonicMap"/> and kept only as its parity reference — no
+    /// production path calls this any more. Do not extend it: a new shape is a row in the rule
+    /// table, which is where adding one costs nothing and is visible to the person who needs it.
+    /// It stays because <c>SwpMnemonicMapParityTests</c> proves the table reproduces it, and that
+    /// proof is worth more than the deletion.
+    ///
     /// The mnemonic → SWP coordinate mapping, ported from the legacy MakeSwpAddressFromMnemonic.
     /// A mnemonic encodes object type, device index and bit; the SWP splits each device's bits
     /// into 32-bit words, so the tag type carries "Alarm1"/"Alarm2"/"Warning1"/"Warning2" with
@@ -53,8 +59,9 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 case SwpPlantType.Safety:
                     // SAFETY rides the MSC branch by contract: safety SWPs only have cabinets
                     // (§9.2) and the safety-side tooling generates its mnemonic column in the
-                    // sorter (MSC) syntax on purpose — only the index table differs here
-                    // (everything 1:1 zero-based).
+                    // sorter (MSC) syntax on purpose — so it takes the CABINET shapes and refuses
+                    // the CLASSDIAG ones (sorter objects a safety SWP has no sheet for); only the
+                    // index table differs otherwise (everything 1:1 zero-based).
                     return MapMsc(m, plantType, deviceIndexOverride, chuteMap, rules);
                 case SwpPlantType.Ispc: return MapIspc(m, firstLineId, groupIndex, deviceIndexOverride, rules);
                 case SwpPlantType.Ups: return MapUps(m, firstLineId, deviceIndexOverride, rules);
@@ -78,6 +85,11 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             }
             else if (m.Length == 22 && StartsWith(m, "CLASSDIAG") && AllDigits(m, 11, 11))
             {
+                // A safety SWP holds cabinets only (rules §9.2): its list has no sheet for any
+                // CLASSDIAG object, so the shape is refused rather than sent to one.
+                if (plantType == SwpPlantType.Safety)
+                    return Fail("#Invalid Mnemonic SAFETY-1 — a safety SWP holds cabinets only");
+
                 // CLASSDIAG AL tttt ddddd bb — type = chars 12-15, device = 16-20, bit = last 2.
                 if (!TryInt(m.Substring(11, 4), out int classType)) return Fail("#Invalid Mnemonic MSC-2");
                 if (!ClassDiagTypes.TryGetValue(classType, out var entry))

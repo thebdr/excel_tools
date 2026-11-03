@@ -61,6 +61,40 @@ namespace ExcelPowerTools.Tests.IoPipeline
             Assert.False(IoListLogic.TryParseAddress(input, out _, out _, out _, out _));
         }
 
+        // The safety PLC's lists address inputs directly — no node, because a distributed
+        // input is unique PLC-wide: "I.0.4" on the FVT list, "I0.4" on the FVZ one, "%I12.7"
+        // as TIA exports it, E/A in German projects. Q/A are outputs.
+        [Theory]
+        [InlineData("I.0.4", 'I', "0", "4")]
+        [InlineData("I0.4", 'I', "0", "4")]
+        [InlineData("%I12.7", 'I', "12", "7")]
+        [InlineData(" i.012.07 ", 'I', "12", "7")]      // padded components normalize
+        [InlineData("E1.0", 'I', "1", "0")]
+        [InlineData("Q.0.1", 'O', "0", "1")]
+        [InlineData("A2.3", 'O', "2", "3")]
+        public void Parses_plc_addresses(string input, char dir, string byteOffset, string bit)
+        {
+            Assert.True(IoListLogic.TryParsePlcAddress(input, out char d, out string b, out string t));
+            Assert.Equal(dir, d);
+            Assert.Equal(byteOffset, b);
+            Assert.Equal(bit, t);
+            if (dir == 'I') Assert.Equal("I" + byteOffset + "." + bit, IoListLogic.BuildPlcAddress(b, t));
+        }
+
+        [Theory]
+        [InlineData("I.80.3.1")]      // the ASC four-part shape belongs to TryParseAddress
+        [InlineData("80.3")]          // no direction
+        [InlineData("IW0")]           // a word, not a bit
+        [InlineData("I.0")]           // no bit
+        [InlineData("X0.1")]          // bad direction
+        [InlineData("I.a.1")]
+        [InlineData("")]
+        [InlineData(null)]
+        public void Rejects_non_plc_addresses(string input)
+        {
+            Assert.False(IoListLogic.TryParsePlcAddress(input, out _, out _, out _));
+        }
+
         [Fact]
         public void Builds_address_and_direction_aware_join_key()
         {
@@ -124,18 +158,38 @@ namespace ExcelPowerTools.Tests.IoPipeline
         // The taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI · 8 DEO · 9 VAI · 10 VAO · 11 BUS.
         [InlineData("5", true)]     // VDI
         [InlineData("6", true)]     // VDO
-        [InlineData("9", true)]     // VAI
-        [InlineData("10", true)]    // VAO
+        [InlineData("9", true)]     // AIS — software analog, exported at 0.0.0
+        [InlineData("10", true)]    // AOS
+        [InlineData("13", true)]    // VAI — the controller's number, not 9
+        [InlineData("14", true)]    // VAO
         [InlineData("05", true)]
         [InlineData("1", false)]    // DI
         [InlineData("4", false)]    // AO
         [InlineData("7", false)]    // DEI — a struct, not a virtual
         [InlineData("8", false)]    // DEO
         [InlineData("11", false)]   // BUS
+        [InlineData("12", false)]   // skipped by the defines (IN odd, OUT = IN + 1)
         [InlineData("", false)]
         public void Classifies_virtual_types(string type, bool expected)
         {
             Assert.Equal(expected, IoListLogic.IsVirtualType(type));
+        }
+
+        [Fact]
+        public void Signal_type_table_follows_the_controller_defines()
+        {
+            // SIGNAL_TYPE_* : 1 DI 2 DO 3 AI 4 AO 5 VI 6 VO 7 DEI 8 DEO 9 AIS 10 AOS 11 BUS (12 skipped) 13 VAI 14 VAO
+            Assert.Equal(new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14 },
+                System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(CsvSignalType.All, e => e.Number)));
+            Assert.Equal("AIS", CsvSignalType.Find("9")!.Acronym);
+            Assert.Equal("VAI", CsvSignalType.Find("13")!.Acronym);
+            Assert.Null(CsvSignalType.Find("12"));
+            Assert.True(CsvSignalType.Find("13")!.IsInput);
+            Assert.False(CsvSignalType.Find("14")!.IsInput);
+            Assert.Equal(5, CsvSignalType.NumberOf("VI"));
+            Assert.Equal(5, CsvSignalType.NumberOf("VDI"));   // the tooling's spelling
+            Assert.Equal(0, CsvSignalType.NumberOf("ZZZ"));
+            Assert.Equal("1 — DI (digital input)", CsvSignalType.Label(CsvSignalType.Find("1")));
         }
 
         [Theory]

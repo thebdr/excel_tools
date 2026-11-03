@@ -231,10 +231,12 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         {
             foreach (LineRecord item in records)
             {
-                // Legacy: a containment match — the CSV signal id carries the mnemonic.
+                // Legacy: a containment match — the CSV signal id carries the mnemonic. Case
+                // does not count, as everywhere else a mnemonic is matched.
                 CsvRecord record = item.Record;
                 string name = Field(record, 1);
-                if (name.Length == 0 || !name.Contains(entry.Mnemonic)) continue;
+                if (name.Length == 0 ||
+                    name.IndexOf(entry.Mnemonic, System.StringComparison.OrdinalIgnoreCase) < 0) continue;
 
                 row.CsvLine = item.Line;
                 bool addressMatches =
@@ -271,7 +273,16 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             {
                 if (candidate.Node != entry.Node || candidate.Card != card) continue;
 
-                if (plantType == SwpPlantType.Ispc)
+                // The reference index routes a node's fault to one induction line / upstream system,
+                // but only in the DEPRECATED layout, where the busfield row carries the linkage
+                // itself. In the modern layout (rules §3.7) the type-11 BUS input carries it and the
+                // row leaves reference index, element and bit all 0 — there is no line to compare,
+                // and node + card already name the device on its controller's network. Comparing
+                // anyway reported every modern ISPC and upstream module as a missing node (field:
+                // FVZ ISPC2, nodes 61 and 101–118 all present, every index 0; all 26 local exports,
+                // FUR_Jadlog upstream included, are that shape).
+                bool carriesLinkage = candidate.ReferenceIndex != 0 || candidate.Element != 0 || candidate.DiagBit != 0;
+                if (carriesLinkage && plantType == SwpPlantType.Ispc)
                 {
                     // Reference index ≥ 10 is a line bitmask — accepted, decoded into the log.
                     if (candidate.ReferenceIndex >= 10)
@@ -282,7 +293,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     }
                     else if (candidate.ReferenceIndex != row.Mapped.ReferenceIndex) continue;
                 }
-                else if (plantType == SwpPlantType.Ups &&
+                else if (carriesLinkage && plantType == SwpPlantType.Ups &&
                          candidate.ReferenceIndex != row.Mapped.ReferenceIndex) continue;
 
                 found = candidate;
@@ -324,17 +335,83 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             }
         }
 
+        /// <summary>
+        /// Where a busfield keeps each column. The IODriver export moved them between versions: the
+        /// older layout has no "Linked Master ID" / "Linked Slave ID", so Reference Index, DB Class
+        /// ID, Element and Bit sit two fields earlier. They are located by the header's own names;
+        /// only a file whose header does not name them is read at the current positions. Fixed
+        /// positions misread every older export — Element became the "#" separator and Bit the
+        /// node's IP address (field: FNU Zalando). A header that resolves nothing never blocks the
+        /// load, the same rule the plant-CSV recognition follows.
+        /// </summary>
+        private sealed class BusfieldColumns
+        {
+            public int Card = 1, Node = 2, Warning = 4, Linked = 5, ReferenceIndex = 8, Element = 10, Bit = 11;
+            public bool FromHeader;
+
+            /// <summary>The highest field a data row must reach to carry every column.</summary>
+            public int Widest =>
+                System.Math.Max(System.Math.Max(Card, Node), System.Math.Max(System.Math.Max(Warning, Linked),
+                    System.Math.Max(ReferenceIndex, System.Math.Max(Element, Bit))));
+
+            public static BusfieldColumns Locate(CsvDocument document)
+            {
+                var columns = new BusfieldColumns();
+                foreach (CsvRecord record in document.Records)
+                {
+                    if (Field(record, 0).Contains("@")) break;   // the header precedes the data
+                    var byName = new Dictionary<string, int>();
+                    for (int i = 0; i < record.FieldCount; i++)
+                    {
+                        string name = Normalize(Field(record, i));
+                        if (name.Length > 0 && !byName.ContainsKey(name)) byName[name] = i;
+                    }
+
+                    int card = IndexOf(byName, "board number");
+                    int node = IndexOf(byName, "physical node address", "phisical node address");
+                    int reference = IndexOf(byName, "reference index");
+                    int element = IndexOf(byName, "element");
+                    int bit = IndexOf(byName, "bit");
+                    if (card < 0 || node < 0 || reference < 0 || element < 0 || bit < 0) continue;
+
+                    columns.Card = card;
+                    columns.Node = node;
+                    columns.ReferenceIndex = reference;
+                    columns.Element = element;
+                    columns.Bit = bit;
+                    int warning = IndexOf(byName, "1 = warning on fault");
+                    if (warning >= 0) columns.Warning = warning;
+                    int linked = IndexOf(byName, "linked node address");
+                    if (linked >= 0) columns.Linked = linked;
+                    columns.FromHeader = true;
+                    break;
+                }
+                return columns;
+            }
+
+            private static int IndexOf(Dictionary<string, int> byName, params string[] names)
+            {
+                foreach (string name in names)
+                    if (byName.TryGetValue(name, out int index)) return index;
+                return -1;
+            }
+
+            private static string Normalize(string text) =>
+                System.Text.RegularExpressions.Regex.Replace(text.Trim().ToLowerInvariant(), @"\s+", " ");
+        }
+
         private static List<BusfieldRow> ParseBusfield(CsvDocument document, List<SwpLogEntry> log)
         {
             var rows = new List<BusfieldRow>();
+            BusfieldColumns columns = BusfieldColumns.Locate(document);
             int line = 0;
             foreach (CsvRecord record in document.Records)
             {
                 line++;
                 if (!Field(record, 0).Contains("@")) continue;
-                string node = Field(record, 2);
+                string node = Field(record, columns.Node);
                 if (node.Length == 0 || !AllDigits(node)) continue;
-                if (record.FieldCount < 12)
+                if (record.FieldCount <= columns.Widest)
                 {
                     log?.Add(SwpLogEntry.For(SwpLogSeverity.Error,
                         "busfield row for node " + node + " is missing columns"));
@@ -342,14 +419,14 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 }
                 rows.Add(new BusfieldRow
                 {
-                    Card = IoListLogic.Norm(Field(record, 1)),
+                    Card = IoListLogic.Norm(Field(record, columns.Card)),
                     Node = IoListLogic.Norm(node),
-                    IsWarning = Field(record, 4) == "1" || Field(record, 4) == "3",
-                    WarnRaw = Field(record, 4),
-                    LinkedAddress = Field(record, 5),
-                    ReferenceIndex = IntOf(Field(record, 8)),
-                    Element = IntOf(Field(record, 10)),
-                    DiagBit = IntOf(Field(record, 11)),
+                    IsWarning = Field(record, columns.Warning) == "1" || Field(record, columns.Warning) == "3",
+                    WarnRaw = Field(record, columns.Warning),
+                    LinkedAddress = Field(record, columns.Linked),
+                    ReferenceIndex = IntOf(Field(record, columns.ReferenceIndex)),
+                    Element = IntOf(Field(record, columns.Element)),
+                    DiagBit = IntOf(Field(record, columns.Bit)),
                     Line = line,
                 });
             }

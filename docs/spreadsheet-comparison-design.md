@@ -86,13 +86,23 @@ checkpoint store, and pure restart matrix now reject gaps, forks, mismatches, mi
 evidence without overwrite, deletion, or inference. The supported publication threat model still excludes a
 coordinated same-user or privileged actor changing streams, links, or namespace state between checkpoints.
 
-The current in-process safety envelope is 256 MiB per OOXML input, 768 MiB across all inputs, 2,000,000 stored
-cells, 10,000,000 bounded grid cells, and 32 MiB of embedded Review state in chunks of at most 4 MiB. Review
+The current in-process safety envelope is 256 MiB per OOXML input, 768 MiB across all inputs, 2,000,000
+physically stored cells per revision and 10,000,000 audited across the project, 2,000,000 cells retained inside
+useful ranges, 10,000,000 bounded grid cells, and 32 MiB of embedded Review state in chunks of at most 4 MiB. Review
 import additionally preflights a 128 MiB compressed ZIP envelope and 768 MiB aggregate declared expansion.
-The grid estimate and alignment projection use each sheet's first-to-last formula/value rectangle. Physically
-stored blank or formatting-only cells outside it are reported and ignored for alignment, but blank presence
-inside it is retained as secondary evidence. All physical cells continue to count against the parsing/memory
-stored-cell limit because they must be read before they can be classified safely.
+The grid estimate and alignment projection use each sheet's first-to-last rectangle containing stored values,
+saved calculated values, or formulas. Physically
+stored blank or formatting-only cells outside it are reported and released before the revision snapshot is
+retained; they count only against the larger parsing/audit ceilings and do not consume the retained-evidence or
+alignment-grid ceilings. Blank presence inside the content rectangle is retained only for alignment safety.
+Grids identical in stored values, saved calculated values, and formulas preserve positional axis identity.
+Changed grids use strong keys where available,
+then bounded exact-token sequence alignment: repeated identical occurrences pair monotonically and only surplus
+occurrences become structural changes, while crossing or reordered duplicate groups remain explicit ambiguity.
+Blank-headed columns require a unique neighboring position and at least 0.90 exact-cell similarity. For
+dynamic-array cells, stored values, saved calculated values, and exact formulas can participate in review history
+with a warning. Spill metadata is retained only for safety classification, and merge remains blocked while spill
+semantics are unmodeled.
 Unrelated and legacy entries remain capped at 64 MiB; only the eight canonical, workbook-listed and
 relationship/content-type-bound projection worksheets may reach 512 MiB each, and only their unique bound shared
 string table may reach 256 MiB. Streaming validation then caps the projection at 8,000,000 cells and 100,000
@@ -104,8 +114,8 @@ truncation marker while exact text stays in embedded state. Progress, cancellati
 elapsed-time estimates are wired into the add-in workflow. These are conservative alpha limits, not final
 product ceilings.
 
-Synthetic Pipeline4-shaped alignment regressions are green, but validation and threshold tuning against the
-real Pipeline4 revision corpus remain pending. The headless 10k/100k/250k Review scale matrix and an independent
+Synthetic Pipeline4-shaped alignment regressions and the supplied real R1.0/R1.1 sorter pair are green, but
+validation and threshold tuning against a broader real-workbook corpus remain pending. The headless 10k/100k/250k Review scale matrix and an independent
 fresh-process 250k validation pass are green. A 2026-07-23 real-Excel 10k attempt passed generation and both
 pre-Excel semantic checks, but this managed Office environment opened both the Review workbook and an unrelated
 known-good control workbook read-only and refused a read/write access transition (`0x800A03EC`). The repaired
@@ -121,7 +131,8 @@ Real-Excel cold-load/retention and the remaining technical spikes below also rem
 
 Spreadsheet comparison is a project-oriented workflow for understanding and reconciling several workbook
 revisions that may have been renamed, emailed, independently edited, or partially merged. Its first promise is
-an exact, explainable account of formula and value changes. Its second promise is a safe, reviewable, one-way
+an exact, explainable account of changes to stored values, saved calculated values, and formulas. Its second
+promise is a safe, reviewable, one-way
 merge into a new revision. Attribution is useful supporting evidence, but an emailed workbook cannot provide
 reliable cell-level authorship after the fact.
 
@@ -146,9 +157,10 @@ atomic evidence beneath it.
 
 In order:
 
-1. Identify exact changes across two or more revisions.
-2. Review, select, and merge chosen formula/value states into a new master revision.
-3. Preserve artifact metadata, reviewer identity, notes, and version-level provenance.
+1. Identify exact changes to stored values, saved calculated values, and formulas across two or more revisions.
+2. Review, select, and merge chosen cell-content states into a new master revision.
+3. Preserve artifact integrity metadata, reviewer identity, notes, and version-level provenance without treating
+   package metadata as comparison content.
 
 The practical target is a file touched by several people through renamed or emailed copies that can diverge in
 parallel. A common ancestor and most emitted revisions are usually available. The user normally knows the
@@ -160,7 +172,8 @@ latest reviewed file; otherwise the tool assists inspection but does not claim t
 - Support a revision graph rather than assuming one perfectly named linear sequence.
 - Infer revision labels, chronological order, parents, sheet mappings, headers, and row keys with explicit
   confidence and user correction.
-- Treat formulas and typed constants as primary content; treat cached calculated-result changes as secondary.
+- Treat stored values, saved calculated values, and formulas as the primary comparison content; show calculation
+  cache trust or staleness without demoting a saved calculated-value change.
 - Preserve exact text and formula evidence and show character-level differences.
 - Align inserted/deleted rows so one insertion does not become thousands of false cell changes.
 - Group repeated changes without hiding their individual cells.
@@ -176,8 +189,8 @@ latest reviewed file; otherwise the tool assists inspection but does not claim t
 - Executing VBA, refreshing queries/connections, updating external links, or recalculating source workbooks.
 - Directly editing any input workbook during comparison.
 - Merging formatting, comments, validation, shapes, charts, PivotTables, queries, VBA, protection, or print
-  settings. These may be inventoried or reported as unsupported/secondary aspects, but the merge unit is cell
-  formula/value only.
+  settings. They may be retained only as snapshot context or integrity/coverage metadata and never as comparison
+  findings; the merge unit is cell formula/value only.
 - Concurrent collaborative editing of one comparison project.
 - Permanent-record management, digital-signature workflows, or archive retention policy.
 - Claiming two unsupported or unreadable workbook regions are equal.
@@ -192,8 +205,8 @@ latest reviewed file; otherwise the tool assists inspection but does not claim t
 | Master | Latest revision and merge destination; explicitly confirmed by the user |
 | Trusted baseline | Latest known reviewed revision; independent from master |
 | Collapsed history | First/trusted state to current master, with intermediate-state count and badges |
-| Expanded history | Every distinct state/revision, timestamps, links, snapshots, formulas/values, manual fills |
-| Comparison priority | Formula changes, then typed value changes, then cached-result-only changes |
+| Expanded history | Every distinct state/revision, timestamps, links, stored values, saved calculated values, formulas, and snapshots; manual fills appear only inside snapshots as context |
+| Comparison priority | Stored-value changes, then saved-calculated-value changes with trust/staleness shown, then formula changes |
 | Noise | Never hidden; classified and shown quietly, with exact character evidence |
 | Repeated changes | Grouped; users may act on a group or override individual children |
 | Decisions | Append-only audit events; facts and decisions remain separate |
@@ -300,14 +313,17 @@ Every reviewed change can request all of the following:
 
 - a small neighborhood around the cell or changed region;
 - the complete logical row;
-- exact formula and typed value;
-- cached calculated result, clearly labelled as cached;
+- stored value;
+- saved calculated value, with cache trust or staleness shown;
+- exact formula;
 - direct precedents and dependents with links, computed lazily within declared formula-parser coverage;
-- an embedded visual snapshot preserving original formatting and manual cell fills;
+- an embedded visual snapshot preserving original formatting and manual cell fills as context only, never as
+  comparison evidence;
 - internal links to immutable evidence/snapshot locations for each involved revision.
 
 Snapshots are created per distinct changed region/group, not per individual cell, to avoid duplicating the same
-context thousands of times. Original fills remain visible; comparison emphasis uses borders, markers, labels,
+context thousands of times. Original fills remain visible only as source context; comparison emphasis uses
+borders, markers, labels,
 and side bands where a replacement fill would obscure evidence.
 
 An explicit **Open original safely** add-in command is secondary to the internal snapshot link. It revalidates
@@ -430,26 +446,24 @@ label. Quoting-only changes must not fabricate a field-value change.
 
 For every physically stored cell needed by the comparison, retain separately:
 
-- exact formula text;
-- normalized R1C1/formula shape used only for equivalence and grouping;
-- typed constant (`blank`, string, number, boolean, error, date serial plus date-system context);
-- cached calculated result and cache trust state;
-- display text where available;
-- selected contextual formatting, especially interior fill used by editors as an unreliable change marker;
-- original sheet/address provenance.
+- typed stored value (`blank`, string, number, boolean, error, date serial plus date-system context);
+- saved calculated value (the stored calculation result) and cache trust state;
+- exact formula text plus formula metadata; normalized R1C1/formula shape is used only for equivalence and grouping;
+- original sheet/address provenance for alignment and navigation only.
 
 Non-content package aspects have an explicit v1 disposition:
 
 | Aspect | v1 result |
 |---|---|
-| Formula and typed value | Atomic review finding; eligible for merge |
-| Cached result | Secondary atomic diagnostic; never merged independently |
-| Row/column/sheet structure | Review event used for identity/alignment; not merged |
-| Manual interior fill | Quiet secondary review/context finding when changed; visible but not a merge candidate |
-| Other style/comment/validation | Inventory/coverage diagnostic when changed; no atomic merge candidate in v1 |
-| Drawings/charts/Pivots/queries/connections/links/VBA/protection/print settings | Coverage hash and changed/unsupported diagnostic only |
+| Stored typed value | Primary atomic comparison finding; eligible for merge |
+| Saved calculated value | Primary atomic comparison finding even when its formula also changed; never merged independently |
+| Formula text and formula metadata | Primary atomic comparison finding; formula content is eligible for merge |
+| Row/column/sheet structure | Alignment and navigation context for the three content channels; not merged |
+| Blank-versus-missing storage | Retained for alignment safety; no content finding by default |
+| Formatting/fills/comments/validation/drawings/charts/Pivots/queries/connections/links/VBA/protection/print settings | Context or integrity/coverage only; never a comparison finding or merge candidate; parsed only where required for safe reading and coverage of stored values, saved calculated values, or formulas |
 
-A changed coverage hash is never presented as an unexplained content change or silently folded into “identical.”
+Package-byte differences outside the three content channels do not make the comparison non-identical. A
+coverage failure that prevents reading a stored value, saved calculated value, or formula remains explicit.
 
 ## 10. Identity and alignment
 
@@ -558,14 +572,15 @@ merge, and archive lifecycle remain outside this slice.
 
 ### 11.1 Primary aspects
 
-1. Formula text changed.
-2. Formula ↔ constant transition.
-3. Typed constant changed.
-4. Same formula with a different cached result (secondary diagnostic).
+1. Stored typed value changed.
+2. Saved calculated value changed, including when its formula also changed.
+3. Stored formula text or formula metadata changed.
+4. Formula ↔ constant transition, represented through the applicable content channels above.
 5. Added/deleted/moved row, column, sheet, or comparable region needed to explain identity.
 
-Formula changes remain substantive even when calculated results match. Same-formula/different-result findings are
-secondary because caches may be stale or depend on links/environment.
+Formula changes remain substantive even when calculated results match, and saved-calculated-value changes remain
+substantive even when formula text also changed. A saved calculated value may be stale or depend on links or
+environment; that is provenance attached to the primary finding, not a reason to suppress it.
 
 Structural findings are first-class review evidence but are not mergeable in v1. Their context menu offers
 navigation, notes, grouping, and **Reviewed — no structural merge**, but not **Use candidate**. Likewise, a
@@ -753,6 +768,9 @@ Fingerprint levels:
 3. canonical sheet and row-block/tile hashes;
 4. sparse cell-aspect hashes;
 5. exact old/new payload and character diff only for changed cells.
+
+Levels 1–2 serve identity, integrity, and coverage only. User change history begins with stored values, saved
+calculated values, and formulas; package-part hashes never become comparison changes.
 
 Shared-string and style indexes must be resolved before semantic hashing, otherwise harmless package index
 renumbering would fabricate mass changes.
@@ -1061,9 +1079,9 @@ changes only.
 ### 19.3 Verify and commit
 
 - Reopen/read back the staging output with the safe adapter and perform a full semantic diff against the base
-  master—not an untouched-cell sample. Every observed formula/value change must be in the frozen plan. Every
-  unselected formula/value, row/sheet structure, named item, link relationship, connection, calculation setting,
-  and cached result outside a planned changed formula must remain equal.
+  master—not an untouched-cell sample. Every observed stored-value, saved-calculated-value, or formula change must
+  be in the frozen plan. Every unselected value, calculated value, formula, row/sheet structure, named item, link
+  relationship, connection, and calculation setting must remain equal.
 - Hash and compare preserved opaque/package parts, including `vbaProject.bin`, external-link parts,
   connections/query parts, drawings, and other unsupported content. Only a small versioned allowlist of
   writer-generated package metadata proven harmless by fixtures may differ; every allowlisted delta is recorded.
@@ -1163,14 +1181,15 @@ version so a future palette can re-render consistently.
 Visual channels have deterministic precedence so a multi-aspect change is not painted ambiguously:
 
 1. cell/background fill expresses review quality/status on the red→amber→green scale;
-2. border/side band and an aspect icon express formula, typed value, cached result, or structure;
+2. border/side band and an aspect icon express stored value, saved calculated value, formula, or structure;
 3. violet corner marker/badge expresses a special condition such as conflict, branch-only, revert, stale, or
    unsupported coverage;
 4. rich-text foreground/underline runs express character additions/removals inside the Details view;
-5. the source’s original fill is preserved in snapshot/mini-grid evidence and never replaced there.
+5. the source’s original fill is preserved in snapshot/mini-grid context, is never treated as change evidence,
+   and is never replaced there.
 
-Text labels, icons, and patterns repeat every color meaning. When channels compete, substantive formula/value
-evidence receives the strongest emphasis and secondary cached-result/format-marker context remains quieter.
+Text labels, icons, and patterns repeat every color meaning. When channels compete, the display order is stored
+value, saved calculated value with trust/staleness shown, then formula; context-only format markers remain quieter.
 
 ## 22. Progress and learned ETA
 
@@ -1350,7 +1369,7 @@ chunks, and archive checksums.
 
 The first release is acceptable only when:
 
-1. Every supported formula/value difference has atomic evidence or an explicit coverage failure.
+1. Every supported stored-value, saved-calculated-value, and formula difference has atomic evidence or an explicit coverage failure.
 2. Quiet equivalence never deletes the exact difference.
 3. A row insertion does not flood downstream cells with false changes.
 4. A sheet rename is confirmed by identity evidence, labelled inferred, or asks for mapping—never guessed silently.
@@ -1385,7 +1404,7 @@ Exit: schemas and invariants tested; no Excel comparison UI yet.
 
 - Revision/file hashing and safe inventory.
 - `.xlsx/.xlsm` streaming reader and delimited adapter.
-- Canonical formula/value model, exact diff, character diff, coverage reporting.
+- Canonical stored-value/saved-calculated-value/formula model, exact diff, character diff, coverage reporting.
 - Local chunk cache and progress/ETA foundation.
 
 Exit: trustworthy two-file CLI/test-harness comparison with no alignment guesses.
@@ -1396,8 +1415,9 @@ Checkpoint: implemented as an add-in alpha for bounded `.xlsx`/`.xlsm` projects.
 setup, conservative alignment, logical history/grouping, diagnostic findings, and Review.xlsx projection are
 wired end to end. A prepublication correction loop now covers exact sheet pairs, paired header/no-header and
 optional data-start choices, and one-to-four paired key columns with append-only replacement/clear events and
-reanalysis from retained snapshots. Synthetic Pipeline4-shaped regressions are green. The phase exit is not yet
-satisfied because the supplied real revision sets still require validation/tuning, and arbitrary duplicate
+reanalysis from retained snapshots. Synthetic Pipeline4-shaped regressions and the supplied real R1.0/R1.1
+sorter pair are green. The phase exit is not yet satisfied because the remaining real revision sets still require
+validation/tuning, and arbitrary duplicate
 row/column resolution is not implemented.
 
 - revision token/order/parent inference and editable graph model;
@@ -1499,8 +1519,8 @@ Spike 1 still needs usable real Excel cold-load measurements; spike 2 still need
 open-save-reopen retention measurements in an environment that permits read/write automation; spike 3 has not
 started. The 2026-07-23 10k attempt proved the ownership/error/cleanup harness and passed its headless prechecks,
 but Office opened both the generated package and a known-good control read-only and rejected `ChangeFileAccess`.
-Synthetic
-Pipeline4-shaped alignment regressions pass, but spike 4 still requires the real corpus. Accordingly, visual
+Synthetic Pipeline4-shaped alignment regressions and the supplied real R1.0/R1.1 sorter pair pass, but spike 4
+still requires a broader real-workbook corpus. Accordingly, visual
 snapshots, complete source-backed resume, synchronized Excel-sheet interaction, and the merge writer remain
 pending; the initial task-pane decision ledger is implemented.
 
@@ -1537,13 +1557,14 @@ coordinated same-user or privileged mutation between checkpoints.
    snapshots; measure Excel open/save/reopen and verify part retention.
 3. **Safe `.xlsb` extraction** — prove macros, events, links, refresh, and recalculation remain off; enumerate
    unsupported features and measure 200 MB behavior.
-4. **Alignment corpus** — synthetic Pipeline4-shaped regressions are green; validate row/sheet confidence on
-   the real documents from Pipeline4’s two known families plus generic tables and model sheets, then tune
+4. **Alignment corpus** — synthetic Pipeline4-shaped regressions and the supplied real R1.0/R1.1 sorter pair are
+   green; validate row/sheet confidence on the remaining real documents from Pipeline4’s known families plus
+   generic tables and model sheets, then tune
    strong/weak thresholds from false-positive cost.
 5. **Formula semantics** — validate `Formula`, `Formula2`, R1C1 normalization, dynamic arrays, tables, external
    links, locale, cached results, and formula-character diff.
 6. **Snapshot rendering** — compare COM `CopyPicture`, value/style mini-grids, and hybrid images for fidelity,
-   size, speed, and preservation of manual fills.
+   size, speed, and preservation of context-only manual fills.
 7. **Transactional publication** — prove same-directory create-new atomic rename on supported local filesystems,
    full semantic/opaque-part verification, application-state restoration, frozen-plan race detection, and crash
    reconciliation. Establish the harmless package-metadata allowlist from fixtures, not assumptions.

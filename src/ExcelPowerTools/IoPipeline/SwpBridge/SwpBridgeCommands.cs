@@ -49,11 +49,13 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
             SwpSidecarDocument document;
             string rootFolder;
+            string sessionPath;
             using (var form = new SwpBridgeSetupForm())
             {
                 if (form.ShowDialog() != DialogResult.OK || form.Result == null) return;
                 document = form.Result;
                 rootFolder = form.SwpRootFolder;
+                sessionPath = form.SessionPath;
             }
 
             // Reconfiguring while a workspace is open REUSES its workbook rather than closing it:
@@ -72,6 +74,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             var session = new SwpBridgeSession
             {
                 SwpRootFolder = rootFolder,
+                SidecarPath = sessionPath,
                 Sidecar = document,
             };
             if (document.LoadNotes.Count > 0)

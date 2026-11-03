@@ -45,7 +45,7 @@ namespace ExcelPowerTools.IoPipeline.IoBridge
         /// <summary>How many source IO-list columns each card sheet contributes; 0 = all.</summary>
         public int IoColumnLimit;
 
-        /// <summary>Regex: virtual CSV rows (5/6/9/10) whose mnemonic matches join by name; "" = none.</summary>
+        /// <summary>Regex: virtual CSV rows (5/6/9/10/13/14) whose mnemonic matches join by name; "" = none.</summary>
         public string VirtualIncludeRegex = "";
 
         /// <summary>Regex: IO-list rows whose mnemonic matches are shown but ignored by the comparison.</summary>

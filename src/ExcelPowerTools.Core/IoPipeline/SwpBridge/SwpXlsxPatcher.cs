@@ -45,6 +45,16 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             public string CachedValue;   // null = computed in the per-row second pass (Q/R)
         }
 
+        /// <summary>An action past every per-cell check, waiting for the FLD-group pass.</summary>
+        private sealed class Candidate
+        {
+            public Outcome Outcome;
+            public string Sheet = "";
+            public int Row;
+            public int Column;
+            public CellMutation Mutation;
+        }
+
         private static bool IsFormulaField(SwpField field) =>
             field == SwpField.FormulaQ || field == SwpField.FormulaR ||
             field == SwpField.FormulaH || field == SwpField.FormulaI ||
@@ -70,6 +80,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             // sheet → row number → mutations (built only from actions that pass the three-way check)
             var plan = new Dictionary<string, Dictionary<int, List<CellMutation>>>(StringComparer.OrdinalIgnoreCase);
             var newDescriptions = new Dictionary<string, string>();   // sheet|row|col → freshly written T/U value
+            var candidates = new List<Candidate>();
+            var claimedCells = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // sheet|row|column
 
             foreach (SwpAction action in actions)
             {
@@ -87,6 +99,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 string current;
                 string plannedCache = null;
                 SwpRowSnapshot row = null;
+                int column = ColumnOf(action.Field);
 
                 if (action.CoordinateKey.StartsWith("header>", StringComparison.Ordinal))
                 {
@@ -135,13 +148,12 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     outcome.Note = "the file now holds \"" + current + "\"";
                     continue;
                 }
-                if (row != null &&
-                    ((action.Field == SwpField.FormulaQ && row.FormulaQShared) ||
-                     (action.Field == SwpField.FormulaR && row.FormulaRShared) ||
-                     (action.Field == SwpField.FormulaH && row.FormulaHShared) ||
-                     (action.Field == SwpField.FormulaI && row.FormulaIShared) ||
-                     (action.Field == SwpField.FUnitH && row.FormulaHShared) ||
-                     (action.Field == SwpField.LocationI && row.FormulaIShared)))
+                // A shared-formula cell is not writable headlessly, WHATEVER the column: a
+                // literal over the shared master orphans every dependent cell (Excel repairs the
+                // file on open) and a child cannot be re-pointed. The reader's SharedMask covers
+                // A..U, so the guard covers every row field; an H/I repair on an intact shared
+                // template is simply moot.
+                if (row != null && column >= 1 && column <= 21 && (row.SharedMask & (1u << (column - 1))) != 0)
                 {
                     outcome.Result = SwpActionStatus.Conflict;
                     outcome.Note = "shared formula — " +
@@ -151,25 +163,59 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     continue;
                 }
 
-                outcome.Result = SwpActionStatus.Applied;
-                result.AppliedCount++;
-
-                if (!plan.TryGetValue(action.Sheet, out Dictionary<int, List<CellMutation>> rows))
-                    plan[action.Sheet] = rows = new Dictionary<int, List<CellMutation>>();
-                if (!rows.TryGetValue(targetRow, out List<CellMutation> mutations))
-                    rows[targetRow] = mutations = new List<CellMutation>();
-
-                int column = ColumnOf(action.Field);
-                if (action.Field == SwpField.Desc1T || action.Field == SwpField.Desc2U)
-                    newDescriptions[action.Sheet + "|" + targetRow + "|" + column] = action.NewValue;
-
-                mutations.Add(new CellMutation
+                // One write per cell per batch: a second action on the same cell would silently
+                // win over the first (the last mutation lands) — it conflicts instead.
+                if (!claimedCells.Add(action.Sheet + "|" + targetRow + "|" + column))
                 {
+                    outcome.Result = SwpActionStatus.Conflict;
+                    outcome.Note = "another action in this batch writes the same cell";
+                    continue;
+                }
+
+                outcome.Result = SwpActionStatus.Applied;
+                candidates.Add(new Candidate
+                {
+                    Outcome = outcome,
+                    Sheet = action.Sheet,
+                    Row = targetRow,
                     Column = column,
-                    IsFormula = IsFormulaField(action.Field),
-                    Value = action.NewValue,
-                    CachedValue = plannedCache,
+                    Mutation = new CellMutation
+                    {
+                        Column = column,
+                        IsFormula = IsFormulaField(action.Field),
+                        Value = action.NewValue,
+                        CachedValue = plannedCache,
+                    },
                 });
+            }
+
+            // The FLD group applies together: a member that conflicted holds the others back —
+            // a blank J next to an un-appended label is the device existing nowhere.
+            var failedGroups = new HashSet<string>();
+            foreach (Outcome outcome in result.Outcomes)
+                if (outcome.Action.FldGroup.Length > 0 && outcome.Result == SwpActionStatus.Conflict)
+                    failedGroups.Add(outcome.Action.FldGroup);
+
+            foreach (Candidate candidate in candidates)
+            {
+                SwpAction action = candidate.Outcome.Action;
+                if (action.FldGroup.Length > 0 && failedGroups.Contains(action.FldGroup))
+                {
+                    candidate.Outcome.Result = SwpActionStatus.Conflict;
+                    candidate.Outcome.Note = "held back — another FLD edit of this row conflicted; " +
+                        "the device blank and its label apply together";
+                    continue;
+                }
+
+                result.AppliedCount++;
+                if (!plan.TryGetValue(candidate.Sheet, out Dictionary<int, List<CellMutation>> rows))
+                    plan[candidate.Sheet] = rows = new Dictionary<int, List<CellMutation>>();
+                if (!rows.TryGetValue(candidate.Row, out List<CellMutation> mutations))
+                    rows[candidate.Row] = mutations = new List<CellMutation>();
+
+                if (action.Field == SwpField.Desc1T || action.Field == SwpField.Desc2U)
+                    newDescriptions[candidate.Sheet + "|" + candidate.Row + "|" + candidate.Column] = action.NewValue;
+                mutations.Add(candidate.Mutation);
             }
 
             if (result.AppliedCount == 0) return result;
@@ -198,10 +244,15 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                             string descriptionValue = newDescriptions.TryGetValue(descKey, out string written)
                                 ? written
                                 : (isQ ? row.Desc1T : row.Desc2U);
-                            // Exact for the append form; the wholesale CONCAT recalculates on open.
-                            mutation.CachedValue = mutation.Value.StartsWith("CONCAT", StringComparison.Ordinal)
-                                ? ""
-                                : (isQ ? row.CachedQ : row.CachedR) + " " + descriptionValue;
+                            // Exact for both shapes: the append puts the description after the
+                            // whole displayed text, the rebuild puts it where the template's
+                            // trailing text was. (Excel recalculates on open regardless — a cache
+                            // that already reads right is what makes the file legible before it.)
+                            string displayed = isQ ? row.CachedQ : row.CachedR;
+                            mutation.CachedValue = SwpDescriptionFormula.IsTruncatingForm(mutation.Value)
+                                ? SwpDescriptionFormula.RenderedFinal(
+                                    displayed, sheet.Description, row.BlockLabel, descriptionValue)
+                                : displayed + " " + descriptionValue;
                         }
                     }
 

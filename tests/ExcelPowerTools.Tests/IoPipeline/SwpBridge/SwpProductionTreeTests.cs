@@ -181,22 +181,59 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             }
         }
 
+        /// <summary>
+        /// A Siemens safety PLC has no IODriver busfield and no realtime input DB: the SCADA's
+        /// alarm export is its ONE production input. The FVT safety system keeps it in an
+        /// "Alarms List" folder beside the SWP, so the SWP's version folder is the root.
+        /// </summary>
         [Fact]
-        public void Safety_looks_up_flat_copies_only()
+        public void Safety_consumes_the_alarm_export_only()
         {
             using (var tree = new TempTree())
             {
-                string busfield = tree.Put(@"IODriver\BusField.csv");
-                tree.Put(@"MSC\DB_Csv\Plant_Inputs.csv");   // the sorter's — not the safety PLC's
-                tree.Put(@"DataDrawSupervisor\DataDraw_PlantData\AlarmLists\Alarms_S1_CABINET.txt");
+                tree.Put(@"IODriver\BusField.csv");          // the sorter's — never the safety PLC's
+                tree.Put("Plant_Inputs.csv");                // likewise
+                tree.Put("SWP_01_Safety.xlsx");
+                string alarms = tree.Put(@"Alarms List\Alarms_S1_CABINET.txt");
 
                 SwpProductionFiles files = SwpProductionTree.Resolve(tree.Root, SwpPlantType.Safety, 1);
 
-                Assert.Equal(busfield, files.Busfield.FullPath);
-                Assert.False(files.PlantInputs.Found);
+                Assert.Empty(files.ApplicableFiles);
+                Assert.False(files.Busfield.Applicable);
+                Assert.False(files.PlantInputs.Applicable);
+                Assert.Equal("", files.Busfield.FullPath);
+                Assert.Equal(new List<string> { alarms }, files.AlarmStrings);
+                Assert.Equal("Alarms List", files.AlarmStringsFolder);
+                Assert.Equal(new[] { @"✓  Alarms List\Alarms_*.txt (1 files)" }, files.ReportLines());
+            }
+        }
+
+        [Fact]
+        public void Safety_accepts_the_sorter_style_AlarmLists_folder_and_a_flat_copy()
+        {
+            using (var tree = new TempTree())
+            {
+                string alarms = tree.Put(@"AlarmLists\Alarms_S1_CABINET.txt");
+                SwpProductionFiles files = SwpProductionTree.Resolve(tree.Root, SwpPlantType.Safety, 1);
+                Assert.Equal(new List<string> { alarms }, files.AlarmStrings);
+                Assert.Equal("AlarmLists", files.AlarmStringsFolder);
+            }
+
+            using (var tree = new TempTree())
+            {
+                string alarms = tree.Put("Alarms_S1_CABINET.txt");
+                SwpProductionFiles files = SwpProductionTree.Resolve(tree.Root, SwpPlantType.Safety, 1);
+                Assert.Equal(new List<string> { alarms }, files.AlarmStrings);
+                Assert.Equal("", files.AlarmStringsFolder);
+            }
+
+            using (var tree = new TempTree())
+            {
+                // The sorter's own export folder is NOT the safety PLC's.
+                tree.Put(@"DataDrawSupervisor\DataDraw_PlantData\AlarmLists\Alarms_S1_CABINET.txt");
+                SwpProductionFiles files = SwpProductionTree.Resolve(tree.Root, SwpPlantType.Safety, 1);
                 Assert.Empty(files.AlarmStrings);
-                Assert.False(files.DestinationParams.Applicable);
-                Assert.Equal(new[] { "BusField.csv", "Plant_Inputs.csv" }, files.ApplicableFiles.Select(f => f.Label).ToArray());
+                Assert.Equal(new[] { "✗  Alarms_*.txt not found — the alarm-strings check stays off" }, files.ReportLines());
             }
         }
 

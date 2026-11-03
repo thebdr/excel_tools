@@ -253,7 +253,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         /// <summary>
         /// The Q/R text as it will read AFTER Excel recalculates — the cached final with its
         /// trailing description swapped for the proposed one (plus the pending formula append or
-        /// wholesale rewrite when queued). Unchanged rows just show the cached text.
+        /// template rebuild when queued). Unchanged rows just show the cached text.
         /// </summary>
         private static string FinalText(SwpBridgeSession session, SwpSheetIndex index,
             SwpRowSnapshot bit, string cached, string currentDesc, string currentFormula,
@@ -266,18 +266,16 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             // The same test the diff's extension guard uses: does the CURRENT formula display
             // the description cell? (Template-only formulas show it only via a pending append.)
             string descCell = (descField == SwpField.Desc1T ? "T" : "U") + bit.RowNumber;
-            bool referencesDesc = (currentFormula ?? "").Replace("$", "")
-                .IndexOf(descCell, StringComparison.OrdinalIgnoreCase) >= 0;
+            bool referencesDesc = SwpDescriptionFormula.ReferencesCell(currentFormula, descCell);
 
-            bool wholesale = hasFormula &&
-                formulaEdit.Proposed.StartsWith("CONCAT", StringComparison.OrdinalIgnoreCase);
+            bool rebuild = hasFormula && SwpDescriptionFormula.IsTruncatingForm(formulaEdit.Proposed);
             string simulated = SwpDiff.SimulateRecalculatedFinal(
                 cached, currentDesc,
                 hasDesc ? descEdit.Proposed : currentDesc,
                 formulaReferencesDesc: referencesDesc,
-                formulaAppendPending: hasFormula && !wholesale,
-                wholesalePending: wholesale,
-                session.Settings.PlantType, index.SheetName, index.Description, bit.BlockLabel);
+                formulaAppendPending: hasFormula && !rebuild,
+                rebuildPending: rebuild,
+                index.Description, bit.BlockLabel);
             return simulated == cached ? cached : simulated + "   ⟵ after recalc";
         }
 

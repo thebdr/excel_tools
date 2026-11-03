@@ -67,6 +67,35 @@ namespace ExcelPowerTools.Core.IoPipeline
             return true;
         }
 
+        private static readonly Regex PlcAddress = new Regex(
+            @"^\s*%?\s*([IQEA])\s*\.?\s*(\d+)\s*\.\s*(\d+)\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        /// <summary>
+        /// Parses a Siemens PLC absolute address — "I.0.4" (the FVT safety list), "I0.4" (the
+        /// FVZ one), "%I12.7" (TIA), German "E"/"A" — into direction and numerically-normalized
+        /// byte and bit. There is NO node: a distributed input's address is unique PLC-wide, which
+        /// is why the safety PLC's lists never write one. Q/A outputs are reported as 'O' like
+        /// <see cref="TryParseAddress"/> does. A four-part ASC address is not a PLC address — the
+        /// two parsers claim disjoint shapes, so a caller may try both.
+        /// </summary>
+        public static bool TryParsePlcAddress(string s, out char direction, out string byteOffset, out string bit)
+        {
+            direction = '\0'; byteOffset = bit = null;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            Match m = PlcAddress.Match(s);
+            if (!m.Success) return false;
+
+            char d = char.ToUpperInvariant(m.Groups[1].Value[0]);
+            direction = d == 'I' || d == 'E' ? 'I' : 'O';
+            byteOffset = Norm(m.Groups[2].Value);
+            bit = Norm(m.Groups[3].Value);
+            return true;
+        }
+
+        /// <summary>The PLC address as the SWP receives it: "I0.4" — TIA's absolute form without the % sign.</summary>
+        public static string BuildPlcAddress(string byteOffset, string bit) => "I" + Norm(byteOffset) + "." + Norm(bit);
+
         private static bool AllDigits(string s)
         {
             if (string.IsNullOrEmpty(s)) return false;
@@ -115,14 +144,13 @@ namespace ExcelPowerTools.Core.IoPipeline
         /// <summary>
         /// True for virtual signals — not read from hardware I/O, their node/offset/bit/card are
         /// frequently stale copy-paste values, so they are excluded from address matching.
-        /// The full CSV type taxonomy: 1 DI · 2 DO · 3 AI · 4 AO · 5 VDI · 6 VDO · 7 DEI (data
-        /// exchange in, a struct) · 8 DEO · 9 VAI · 10 VAO · 11 BUS (remote node state).
-        /// Virtuals are the V* types: 5, 6, 9, 10.
+        /// The taxonomy is <see cref="CsvSignalType"/> (the controller's own defines): virtuals are
+        /// 5 VI · 6 VO · 9 AIS · 10 AOS · 13 VAI · 14 VAO.
         /// </summary>
         public static bool IsVirtualType(string typeValue)
         {
-            string t = Norm(typeValue);
-            return t == "5" || t == "6" || t == "9" || t == "10";
+            CsvSignalType.Entry e = CsvSignalType.Find(typeValue);
+            return e != null && e.Virtual;
         }
 
         /// <summary>

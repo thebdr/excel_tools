@@ -6,6 +6,7 @@ using ExcelDna.Integration;
 using ExcelPowerTools.Commands;
 using ExcelPowerTools.Core.Csv;
 using ExcelPowerTools.Core.IoPipeline;
+using ExcelPowerTools.Core.IoPipeline.IoBridge;
 using ExcelPowerTools.Interop;
 using Microsoft.Win32;
 
@@ -61,10 +62,9 @@ namespace ExcelPowerTools.IoPipeline
             SheetGrid g = ReadSheet(sheet);
             if (g == null) { Dialogs.Info("The sheet is empty."); return; }
 
-            var csv = LocateCsvColumns(g, requireBoard: false);
+            char dir = DetectDirection(app, sheet);   // also picks the positional fallback layout
+            var csv = LocateCsvColumns(g, requireBoard: false, dir);
             if (csv == null) return;
-
-            char dir = DetectDirection(app, sheet);
 
             var undo = UndoManager.NewEntry("Build //Address", sheet);
             using (new ExcelStateGuard(manualCalculation: true))
@@ -122,7 +122,8 @@ namespace ExcelPowerTools.IoPipeline
             SheetGrid g = ReadSheet(sheet);
             if (g == null) { Dialogs.Info("The sheet is empty."); return; }
 
-            var csv = LocateCsvColumns(g, requireBoard: true);
+            char dir = DetectDirection(app, sheet);   // also picks the positional fallback layout
+            var csv = LocateCsvColumns(g, requireBoard: true, dir);
             if (csv == null) return;
 
             string path = AskIoListPath();
@@ -134,8 +135,6 @@ namespace ExcelPowerTools.IoPipeline
                 index = ReadIoList(app, path);
             }
             if (index == null) return;
-
-            char dir = DetectDirection(app, sheet);
 
             var undo = UndoManager.NewEntry("Get data from IO list", sheet);
             int matchedByAddress = 0, matchedByNode = 0, matchedByNameOnly = 0,
@@ -342,8 +341,10 @@ namespace ExcelPowerTools.IoPipeline
             var fileNotes = new List<string>();
             foreach (string path in csvPaths)
             {
-                int n = LoadCsvSignals(path, index, out bool dirUnknown, out int virtualSkipped, out int busRows);
-                fileNotes.Add($"{Path.GetFileName(path)}: {(n < 0 ? "no Name/Node/Offset/Bit/Card columns" : n + " row(s)")}" +
+                int n = LoadCsvSignals(path, index, out bool dirUnknown, out int virtualSkipped, out int busRows,
+                    out bool byPosition);
+                fileNotes.Add($"{Path.GetFileName(path)}: {(n < 0 ? "not a plant CSV (no recognizable header, and the fixed column positions hold no signal data)" : n + " row(s)")}" +
+                              (byPosition ? " (header not recognized — columns taken by the legacy positions)" : "") +
                               (busRows > 0 ? $", {busRows} bus-diagnostic (type 11) by node" : "") +
                               (virtualSkipped > 0 ? $", {virtualSkipped} virtual (type 5/6) skipped" : "") +
                               (dirUnknown ? " (direction unknown — indexed as both I and O)" : ""));
@@ -533,41 +534,56 @@ namespace ExcelPowerTools.IoPipeline
             return row;
         }
 
-        private static CsvColumns LocateCsvColumns(SheetGrid g, bool requireBoard)
+        private static CsvColumns LocateCsvColumns(SheetGrid g, bool requireBoard, char dir)
         {
             var rowsList = new List<string[]>(g.Rows);
             for (int r = 0; r < g.Rows; r++) rowsList.Add(RowOf(g, r));
 
+            // Tier 1 — the sheet's own header names. DELIBERATELY more lenient than the file
+            // locator: Build //Address runs on sheets naming only Node/Offset/Bit, so Name,
+            // Type and (unless required) Board may stay unresolved.
             int headerIdx = CsvDetect.DetectHeaderRow(rowsList, "#");
-            if (headerIdx < 0)
+            if (headerIdx >= 0)
             {
-                Dialogs.Info("No header row detected on this sheet.");
-                return null;
+                var headers = rowsList[headerIdx];
+                var c = new CsvColumns
+                {
+                    HeaderSheetRow = headerIdx + 1,
+                    Node = IoListLogic.FindColumn(headers, "node"),
+                    Offset = IoListLogic.FindColumn(headers, "offset"),
+                    Bit = IoListLogic.FindColumn(headers, "bit"),
+                    Board = IoListLogic.FindColumn(headers, CsvBoardHeaders),
+                    Name = IoListLogic.FindColumn(headers, CsvNameHeaders),
+                    Type = IoListLogic.FindColumn(headers, CsvTypeHeaders),
+                };
+                if (c.Node >= 0 && c.Offset >= 0 && c.Bit >= 0 && (!requireBoard || c.Board >= 0))
+                    return c;
             }
 
-            var headers = rowsList[headerIdx];
-            var c = new CsvColumns
-            {
-                HeaderSheetRow = headerIdx + 1,
-                Node = IoListLogic.FindColumn(headers, "node"),
-                Offset = IoListLogic.FindColumn(headers, "offset"),
-                Bit = IoListLogic.FindColumn(headers, "bit"),
-                Board = IoListLogic.FindColumn(headers, CsvBoardHeaders),
-                Name = IoListLogic.FindColumn(headers, CsvNameHeaders),
-                Type = IoListLogic.FindColumn(headers, CsvTypeHeaders),
-            };
+            // Tier 2 — header text must never block a load (user ruling 2026-08-24): the plant
+            // CSV's legacy fixed positions, accepted only when the data at them reads as signals.
+            // The direction picks the layout; unknown tries Inputs first (its gate needs 16+
+            // columns, so an Outputs-shaped sheet falls through cleanly, never the reverse).
+            CsvColumnsMap map = dir == 'O'
+                ? CsvColumnsMap.Locate(rowsList, PlantCsvKind.Outputs)
+                : CsvColumnsMap.Locate(rowsList, PlantCsvKind.Inputs)
+                  ?? (dir == '\0' ? CsvColumnsMap.Locate(rowsList, PlantCsvKind.Outputs) : null);
+            if (map != null)
+                return new CsvColumns
+                {
+                    HeaderSheetRow = map.HeaderIndex + 1,
+                    Node = map.Node,
+                    Offset = map.Offset,
+                    Bit = map.Bit,
+                    Board = map.Board,
+                    Name = map.Name,
+                    Type = map.Type,
+                };
 
-            var missing = new List<string>();
-            if (c.Node < 0) missing.Add("Node");
-            if (c.Offset < 0) missing.Add("Offset");
-            if (c.Bit < 0) missing.Add("Bit");
-            if (requireBoard && c.Board < 0) missing.Add("Card / Board number");
-            if (missing.Count > 0)
-            {
-                Dialogs.Info("CSV columns not found in the header: " + string.Join(", ", missing));
-                return null;
-            }
-            return c;
+            Dialogs.Info("This sheet does not read as a plant CSV: no header names Node/Offset/Bit" +
+                         (requireBoard ? "/Card" : "") + ", and the legacy column positions hold no " +
+                         "signal-shaped data either.");
+            return null;
         }
 
         private static char DetectDirection(dynamic app, dynamic sheet)
@@ -873,31 +889,31 @@ namespace ExcelPowerTools.IoPipeline
             CsvIndex index,
             out bool dirUnknown,
             out int virtualSkipped,
-            out int busRows)
+            out int busRows,
+            out bool byPosition)
         {
             dirUnknown = false;
             virtualSkipped = 0;
             busRows = 0;
+            byPosition = false;
             try
             {
                 var doc = CsvFile.Load(File.ReadAllBytes(path));
                 var rows = new List<string[]>(doc.Records.Count);
                 foreach (var rec in doc.Records) rows.Add(rec.Fields);
 
-                int headerIdx = CsvDetect.DetectHeaderRow(rows, "#");
-                if (headerIdx < 0) return -1;
-
-                var headers = rows[headerIdx];
-                int iName = IoListLogic.FindColumn(headers, CsvNameHeaders);
-                int iNode = IoListLogic.FindColumn(headers, "node");
-                int iOff = IoListLogic.FindColumn(headers, "offset");
-                int iBit = IoListLogic.FindColumn(headers, "bit");
-                int iBoard = IoListLogic.FindColumn(headers, CsvBoardHeaders);
-                int iType = IoListLogic.FindColumn(headers, CsvTypeHeaders);
-                if (iName < 0 || iNode < 0 || iOff < 0 || iBit < 0 || iBoard < 0) return -1;
-
+                // The filename's direction also picks the positional layout the tolerant locator
+                // falls back to when no header name resolves; unknown-direction files try both.
                 char dir = IoListLogic.DirectionFromName(Path.GetFileName(path));
                 dirUnknown = dir == '\0';
+                CsvColumnsMap map = CsvColumnsMap.Locate(doc, dir == 'O' ? PlantCsvKind.Outputs : PlantCsvKind.Inputs)
+                    ?? (dir == '\0' ? CsvColumnsMap.Locate(doc, PlantCsvKind.Outputs) : null);
+                if (map == null) return -1;
+                byPosition = map.LocatedByPosition;
+
+                int headerIdx = map.HeaderIndex;
+                int iName = map.Name, iNode = map.Node, iOff = map.Offset,
+                    iBit = map.Bit, iBoard = map.Board, iType = map.Type;
 
                 int count = 0;
                 for (int r = headerIdx + 1; r < rows.Count; r++)

@@ -19,9 +19,12 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
         private static readonly string[] Headers =
         {
-            "Include", "Status", "Sheet", "Coordinate", "Mnemonic", "Field",
+            "Include", "Status", "Sheet", "Coordinate", "Mnemonic", "Field", "Group",
             "Old value", "New value", "Queued (UTC)", "Applied (UTC)", "Note",
         };
+
+        /// <summary>The Group cell of an FLD-group member (a device blank with its label writes).</summary>
+        internal const string FldGroupLabel = "FLD";
 
         private static int Rgb(int r, int g, int b) => r | (g << 8) | (b << 16);
         private static readonly int HeaderBlue = Rgb(180, 210, 240);
@@ -73,7 +76,9 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
             sheet.Cells(1, 1).Value =
                 "SWP Bridge queue · diff-driven: the pending writes recompute on every refresh · " +
-                "double-click Include to toggle · unchecked actions are skipped by Apply";
+                "double-click Include to toggle · unchecked actions are skipped by Apply · " +
+                "Group " + FldGroupLabel + " = a device blank with the label writes it depends on: " +
+                "they toggle together and apply together";
             sheet.Cells(1, 1).Font.Bold = true;
 
             var headers = new object[1, Headers.Length];
@@ -99,11 +104,12 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     data[r, 3] = a.CoordinateKey;
                     data[r, 4] = a.Mnemonic;
                     data[r, 5] = FieldLabel(a.Field);
-                    data[r, 6] = a.OldValue;
-                    data[r, 7] = a.NewValue;
-                    data[r, 8] = a.QueuedUtc;
-                    data[r, 9] = a.AppliedUtc;
-                    data[r, 10] = a.StatusNote;
+                    data[r, 6] = a.FldGroup.Length > 0 ? FldGroupLabel : "";
+                    data[r, 7] = a.OldValue;
+                    data[r, 8] = a.NewValue;
+                    data[r, 9] = a.QueuedUtc;
+                    data[r, 10] = a.AppliedUtc;
+                    data[r, 11] = a.StatusNote;
                 }
 
                 dynamic block = sheet.Range(

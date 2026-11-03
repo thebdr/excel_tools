@@ -150,13 +150,13 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
 
         // ---- the per-row CONFIG-text answer --------------------------------------------------
 
-        private static SwpSpineRow BuildWithTrust(bool workspaceDefault, bool? rowAnswer)
+        private static SwpSpineRow BuildWithTrust(SwpConfigMode workspaceDefault, bool? rowAnswer)
         {
             var options = new SwpDiffOptions
             {
                 PlantType = SwpPlantType.Msc,
                 MismatchMode = SwpMismatchMode.AppendToDescription,
-                TrustConfigPlant = workspaceDefault,
+                ConfigMode = workspaceDefault,
             };
             if (rowAnswer.HasValue)
                 options.Overrides = new Dictionary<string, SwpRowOverride>
@@ -173,30 +173,32 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
         [Fact]
         public void Keep_config_text_on_an_ordinary_row_writes_the_fld_label_alone()
         {
-            // The workspace default would compose the IO text here (the row is neither generated
-            // nor "P*"-typed): an explicit tick must still take effect, or the gesture does nothing.
-            SwpSpineRow row = BuildWithTrust(workspaceDefault: false, rowAnswer: true);
+            // The workspace default would compose the IO text here: an explicit tick must still
+            // take effect, or the gesture does nothing.
+            SwpSpineRow row = BuildWithTrust(SwpConfigMode.ReplaceTemplateTail, rowAnswer: true);
 
             Assert.Equal("=S1+SG14-B1", Edit(row, SwpField.Desc1T).Proposed.Trim());
             Assert.DoesNotContain("SAFETY DOOR OPEN", Edit(row, SwpField.Desc1T).Proposed);
         }
 
         [Fact]
-        public void Write_io_text_on_a_row_beats_the_workspace_trust_setting()
+        public void Write_io_text_on_a_row_beats_the_workspace_config_mode()
         {
-            SwpSpineRow row = BuildWithTrust(workspaceDefault: true, rowAnswer: false);
+            SwpSpineRow row = BuildWithTrust(SwpConfigMode.KeepConfigText, rowAnswer: false);
 
             Assert.StartsWith("SAFETY DOOR OPEN", Edit(row, SwpField.Desc1T).Proposed);
             Assert.EndsWith(" =S1+SG14-B1", Edit(row, SwpField.Desc1T).Proposed);
         }
 
         [Fact]
-        public void Without_a_row_answer_the_default_keeps_its_automatic_scope()
+        public void The_config_mode_reaches_every_row_not_only_the_generated_ones()
         {
-            // Default ON, but this row is neither generated nor "P*"-typed → it still composes.
-            SwpSpineRow row = BuildWithTrust(workspaceDefault: true, rowAnswer: null);
+            // The two settings became one exclusive mode: "never overwrite" is now the answer for
+            // the whole workspace, not a switch that only reached generated and "P*"-typed rows.
+            // This row is neither, and it still keeps CONFIG's text.
+            SwpSpineRow row = BuildWithTrust(SwpConfigMode.KeepConfigText, rowAnswer: null);
 
-            Assert.StartsWith("SAFETY DOOR OPEN", Edit(row, SwpField.Desc1T).Proposed);
+            Assert.Equal("=S1+SG14-B1", Edit(row, SwpField.Desc1T).Proposed.Trim());
         }
 
         [Fact]
@@ -252,7 +254,9 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             Assert.Null(Edit(row, SwpField.FUnitH));                         // H already agrees
             Assert.Equal("-B1", Edit(row, SwpField.DeviceJ).Proposed);       // J gets the device
             Assert.Equal("SAFETY DOOR OPEN", Edit(row, SwpField.Desc1T).Proposed.Trim());   // descriptions bare
-            Assert.Null(Edit(row, SwpField.FormulaQ));
+            // Where the FLD lands is one question, what happens to CONFIG's text another: the row
+            // still takes the workspace CONFIG_PLANT mode, which here rebuilds Q/R.
+            Assert.True(SwpDescriptionFormula.IsTruncatingForm(Edit(row, SwpField.FormulaQ).Proposed));
             Assert.Equal(SwpRowVerdict.LabelMismatch, row.Verdict);
         }
 
@@ -286,9 +290,19 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
 
             SwpSpineRow spine = Build(row, SwpMismatchMode.Overwrite);
 
+            // KeepConfigText: with the identity already in the row's own cells there is nothing
+            // left to write. The other mode would still rebuild Q/R, which is not this question.
+            SwpSpineRow kept = SwpDiff.Build(new[] { Door() }, Index(row),
+                new SwpDiffOptions
+                {
+                    PlantType = SwpPlantType.Msc,
+                    MismatchMode = SwpMismatchMode.Overwrite,
+                    ConfigMode = SwpConfigMode.KeepConfigText,
+                }, new List<SwpLogEntry>()).Rows[0];
+
             Assert.False(spine.LocationMismatch);
-            Assert.Equal(SwpRowVerdict.UpToDate, spine.Verdict);
-            Assert.Empty(spine.Edits);
+            Assert.Equal(SwpRowVerdict.UpToDate, kept.Verdict);
+            Assert.Empty(kept.Edits);
         }
 
         [Fact]

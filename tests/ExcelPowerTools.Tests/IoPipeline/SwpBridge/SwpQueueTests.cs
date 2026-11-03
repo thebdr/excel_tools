@@ -172,5 +172,82 @@ namespace ExcelPowerTools.Tests.IoPipeline.SwpBridge
             Assert.Equal(2, queue.Actions.Count);
             Assert.Equal(2, queue.Actions.Select(a => a.Key).Distinct().Count());
         }
+
+        // ---- the FLD group: a device blank rides with the label writes it depends on ----------
+
+        private const string Group = "CABINET|DB_X.Alarm1>0>0";
+
+        private static SwpProposedEdit Grouped(SwpField field, string proposed, string current)
+        {
+            SwpProposedEdit edit = Edit(proposed, current, field);
+            edit.FldGroup = Group;
+            return edit;
+        }
+
+        [Fact]
+        public void An_fld_group_toggles_together_and_applies_together()
+        {
+            var queue = new SwpQueue();
+            queue.ReconcileFromDiff(new[]
+            {
+                Grouped(SwpField.DeviceJ, "", "-F1"),
+                Grouped(SwpField.Desc1T, "TEXT =S1+X-F1", "TEXT"),
+                Edit(),   // the row's address write — not part of the group
+            }, a => a.Field == SwpField.DeviceJ ? "-F1" : a.Field == SwpField.Desc1T ? "TEXT" : "OLD", "t0");
+
+            SwpAction blank = queue.Actions.Single(a => a.Field == SwpField.DeviceJ);
+            SwpAction label = queue.Actions.Single(a => a.Field == SwpField.Desc1T);
+            SwpAction address = queue.Actions.Single(a => a.Field == SwpField.AddressG);
+            Assert.Equal(Group, blank.FldGroup);
+            Assert.Equal(Group, label.FldGroup);
+            Assert.Equal("", address.FldGroup);
+
+            Assert.True(queue.SetInclude(label.ActionId, false));
+            Assert.False(blank.Include);                          // the blank followed the label
+            Assert.True(address.Include);
+            Assert.Same(address, Assert.Single(queue.IncludedPending()));
+            Assert.Empty(queue.HeldBack());
+
+            Assert.True(queue.SetInclude(blank.ActionId, true));
+            Assert.True(label.Include);
+            Assert.Equal(3, queue.IncludedPending().Count);
+        }
+
+        [Fact]
+        public void A_split_group_is_held_back_from_apply()
+        {
+            // A group only splits outside the gesture (a hand-edited sidecar, a member stuck in
+            // conflict): the included member must not apply alone.
+            var queue = new SwpQueue();
+            queue.ReconcileFromDiff(new[]
+            {
+                Grouped(SwpField.DeviceJ, "", "-F1"),
+                Grouped(SwpField.Desc1T, "TEXT =S1+X-F1", "TEXT"),
+            }, a => a.Field == SwpField.DeviceJ ? "-F1" : "TEXT", "t0");
+            SwpAction label = queue.Actions.Single(a => a.Field == SwpField.Desc1T);
+
+            label.Include = false;   // bypassing SetInclude on purpose
+            Assert.Empty(queue.IncludedPending());
+            Assert.Equal(SwpField.DeviceJ, Assert.Single(queue.HeldBack()).Field);
+
+            label.Include = true;
+            label.Status = SwpActionStatus.Conflict;
+            Assert.Empty(queue.IncludedPending());
+            Assert.Equal(SwpField.DeviceJ, Assert.Single(queue.HeldBack()).Field);
+        }
+
+        [Fact]
+        public void The_group_follows_the_fresh_diff_on_reconcile()
+        {
+            var queue = new SwpQueue();
+            queue.ReconcileFromDiff(new[] { Grouped(SwpField.Desc1T, "TEXT =S1+X-F1", "TEXT") }, a => "TEXT", "t0");
+            Assert.Equal(Group, queue.Actions[0].FldGroup);
+
+            // The device blank was applied meanwhile: the label write stands alone, no group.
+            SwpProposedEdit alone = Grouped(SwpField.Desc1T, "TEXT =S1+X-F1", "TEXT");
+            alone.FldGroup = "";
+            queue.ReconcileFromDiff(new[] { alone }, a => "TEXT", "t1");
+            Assert.Equal("", queue.Actions[0].FldGroup);
+        }
     }
 }

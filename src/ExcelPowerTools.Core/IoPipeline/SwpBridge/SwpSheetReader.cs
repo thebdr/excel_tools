@@ -22,6 +22,13 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         private static readonly Regex TagTypePattern =
             new Regex(@"\.(State|Alarm\d+|Warning\d+)$", RegexOptions.Compiled);
 
+        /// <summary>Excel's error values as their cached text ("#REF!" after a row deletion…).</summary>
+        private static readonly HashSet<string> ExcelErrors = new HashSet<string>(StringComparer.Ordinal)
+            { "#REF!", "#N/A", "#VALUE!", "#NAME?", "#DIV/0!", "#NULL!", "#NUM!" };
+
+        /// <summary>Per sheet, how many error-valued identity rows are listed one by one.</summary>
+        private const int MaxUnindexableWarnings = 10;
+
         /// <summary>Thrown when the SWP cannot be indexed at all (foreign save, no sheets…).</summary>
         public sealed class SwpUnreadableException : Exception
         {
@@ -179,6 +186,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
             string blockFUnit = "", blockLocation = "", blockLabel = "";
             int blockHeaderRow = 0;
+            int unindexable = 0;
 
             using (OpenXmlReader reader = ReaderOver(part, partXml))
             {
@@ -209,6 +217,9 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                         continue;
                     }
                     if (rowNumber == 4) { sheet.DdeTable = Text(b, sharedStrings); continue; }
+                    // Row 5 "Output filename" — the alarm list this sheet exports, and so the
+                    // authority on which exported lists belong to this SWP at all.
+                    if (rowNumber == 5) { sheet.OutputFileName = Text(b, sharedStrings); continue; }
                     if (rowNumber == 6) { sheet.Description = Text(b, sharedStrings); continue; }
 
                     // Device-block header: "Table entry:" in B, the entry number in C, the
@@ -243,9 +254,27 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                             "value — the file was saved by a tool other than Excel. Open it in Excel, " +
                             "save it once, and retry.");
 
+                    // A cached ERROR in an identity cell (a #REF! left by a row deletion) makes
+                    // the row unmatchable: no update — the FLD included — can ever reach it. A
+                    // silent no-op rather than corruption, but a gap the user must see; listed
+                    // per row up to a cap, then counted.
                     string tagType = Text(a, sharedStrings);
+                    if (IsErrorValue(a, tagType))
+                    {
+                        ReportUnindexable(ref unindexable, name, rowNumber, "the tag type (A) is " + tagType.Trim(), log);
+                        continue;
+                    }
                     if (tagType.Length == 0 || !TagTypePattern.IsMatch(tagType)) continue;
 
+                    string cText = Text(c, sharedStrings), dText = Text(d, sharedStrings);
+                    if (IsErrorValue(c, cText) || IsErrorValue(d, dText))
+                    {
+                        ReportUnindexable(ref unindexable, name, rowNumber,
+                            IsErrorValue(c, cText)
+                                ? "the table entry (C) is " + cText.Trim()
+                                : "the bit (D) is " + dText.Trim(), log);
+                        continue;
+                    }
                     if (!TryIntCached(c, sharedStrings, out int tableEntry)) continue;
                     if (!TryIntCached(d, sharedStrings, out int bit)) continue;
 
@@ -319,7 +348,25 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     }
                 }
             }
+            if (unindexable > MaxUnindexableWarnings)
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "SWP sheet '" + name + "': " + unindexable + " rows carry an error-valued identity " +
+                    "(the first " + MaxUnindexableWarnings + " are listed) — none of them can receive an update"));
             return sheet;
+        }
+
+        private static bool IsErrorValue(Cell cell, string text) =>
+            (cell?.DataType != null && cell.DataType.Value == CellValues.Error) ||
+            ExcelErrors.Contains((text ?? "").Trim());
+
+        private static void ReportUnindexable(ref int count, string sheetName, int rowNumber, string why,
+            List<SwpLogEntry> log)
+        {
+            count++;
+            if (count > MaxUnindexableWarnings) return;
+            log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                "SWP sheet '" + sheetName + "' row " + rowNumber + ": " + why + " — the row cannot be " +
+                "matched, so no update (the FLD included) can reach it; fix the formula in the SWP"));
         }
 
         private static IReadOnlyList<string> LoadSharedStrings(WorkbookPart workbook)

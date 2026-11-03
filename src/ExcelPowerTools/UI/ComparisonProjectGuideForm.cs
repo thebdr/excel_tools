@@ -56,11 +56,11 @@ namespace ExcelPowerTools.UI
             "Confirm that you reviewed the order, parent links, master, and optional baseline.\r\n" +
             "Any later setup change clears this check and disables Build comparison again.";
         internal const string Limits =
-            "Current alpha processing limits and the formula/value rule used to bound each sheet.\r\n" +
+            "Current alpha limits and the comparison-content rule used to bound each sheet.\r\n" +
             "Source workbooks remain read-only throughout comparison.";
         internal const string BuildComparison =
-            "Validate the confirmed lineage, compare immutable source snapshots, and create Review.xlsx.\r\n" +
-            "The source workbooks are never modified.";
+            "Compare stored values, saved calculated values, and formulas, then create Review.xlsx.\r\n" +
+            "Rows and columns are aligned first; styles and other package details are not comparison changes.";
         internal const string Cancel =
             "Close setup without starting the comparison. No source workbook is changed.";
     }
@@ -204,13 +204,19 @@ namespace ExcelPowerTools.UI
             AppendParagraph(
                 "Power Tools hashes and reads each selected revision without opening it for editing. It creates a " +
                 "new Review.xlsx and refuses to overwrite an existing destination or a source file.\r\n\r\n" +
-                "For alignment, each sheet is bounded by its first and last formula/value rows and columns. " +
+                "Cell-content comparison has exactly three channels: stored values, saved calculated values, " +
+                "and formulas. Saved calculated values are compared even when the formula also changed. Styles, " +
+                "fills, comments, drawings, and package metadata are not comparison changes; they are used only " +
+                "for safe reading and integrity checks.\r\n\r\n" +
+                "For alignment, each sheet is bounded by its first and last comparison-content rows and columns. " +
                 "Physically stored blank or formatting-only cells outside that rectangle are ignored and reported; " +
-                "blank-versus-missing evidence inside it is retained. No formula or typed value is silently trimmed.\r\n\r\n" +
-                "Current aggregate limits are 2,000,000 physically stored cells and 10,000,000 effective grid " +
-                "cells. Per-sheet limits are 100,000 rows, 4,096 columns, and 5,000,000 effective grid cells. " +
-                "Ignored blank-tail cells still count toward the physical-cell limit because they must first be " +
-                "read and classified safely.");
+                "blank-versus-missing storage inside it is retained only for alignment safety. No stored value, " +
+                "saved calculated value, or formula is silently trimmed.\r\n\r\n" +
+                "Current limits are 2,000,000 physically stored cells per revision and 10,000,000 audited " +
+                "across the project; 2,000,000 cells retained inside useful ranges; and 10,000,000 effective " +
+                "grid cells. Per-sheet limits are 100,000 rows, 4,096 columns, and 5,000,000 effective grid " +
+                "cells. Blank-tail cells are parsed under the input safety limits, reported, and then released " +
+                "before alignment.");
 
             AppendHeading("What happens after Build comparison");
             AppendParagraph(

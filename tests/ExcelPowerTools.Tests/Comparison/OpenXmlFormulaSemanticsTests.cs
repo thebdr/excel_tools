@@ -855,7 +855,7 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
-        public void Cached_result_changes_remain_secondary_and_are_never_recalculated()
+        public void Cached_result_changes_are_primary_stored_evidence_and_are_never_recalculated()
         {
             OpenXmlWorksheetSnapshot before = Read(OpenXmlWorkbookFixture.Create(new[]
             {
@@ -870,7 +870,7 @@ namespace ExcelPowerTools.Tests.Comparison
                 ExactComparisonEngine.Compare(before.Snapshot, after.Snapshot));
 
             Assert.Equal(CellChangeAspect.CachedResult, change.Aspect);
-            Assert.True(change.IsSecondary);
+            Assert.False(change.IsSecondary);
             Assert.Equal(CanonicalValue.Number(2), before.FormulaObservations[0].CachedResult);
             Assert.Equal(CanonicalValue.Number(3), after.FormulaObservations[0].CachedResult);
         }

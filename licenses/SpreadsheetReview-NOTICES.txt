@@ -1,0 +1,12 @@
+Spreadsheet Review dependency notices
+
+DiffPlex 1.9.0
+Author: Matthew Manela
+Project: https://github.com/mmanela/diffplex/
+NuGet package: https://www.nuget.org/packages/DiffPlex/1.9.0
+Repository commit recorded by the package: 3cb6415c331a0af2f2686154cb77169ef29b63ce
+License: Apache License 2.0 (see DiffPlex-1.9.0-Apache-2.0.txt)
+License source: https://raw.githubusercontent.com/mmanela/diffplex/3cb6415c331a0af2f2686154cb77169ef29b63ce/License.txt
+
+The NuGet binary is used without modification. No upstream source files were copied into the comparison implementation.
+The upstream license text is included with line wrapping normalized. This notice does not replace or alter that license.

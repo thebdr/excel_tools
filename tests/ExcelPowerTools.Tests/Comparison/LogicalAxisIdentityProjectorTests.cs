@@ -116,10 +116,11 @@ namespace ExcelPowerTools.Tests.Comparison
                 new[] { "A" },
                 new[] { "X" },
                 new[] { "X" },
+                new[] { "Y" },
                 new[] { "B" });
             AlignmentTable after = Table(
                 new[] { "A" },
-                new[] { "X" },
+                new[] { "Y" },
                 new[] { "X" },
                 new[] { "X" },
                 new[] { "B" });
@@ -133,10 +134,10 @@ namespace ExcelPowerTools.Tests.Comparison
             LogicalAxisIdentityAmbiguity ambiguity = Assert.Single(child.Ambiguities);
             Assert.Equal(LogicalAxisAmbiguityKind.AlignmentBlock, ambiguity.Kind);
             Assert.Equal(new[] { 1, 2 }, ambiguity.BeforeIndices);
-            Assert.Equal(new[] { 1, 2, 3 }, ambiguity.AfterIndices);
+            Assert.Equal(new[] { 2, 3 }, ambiguity.AfterIndices);
             Assert.Equal(root.IdentityByPhysicalIndex[1], ambiguity.KnownParentIdentities[1]);
             Assert.Equal(root.IdentityByPhysicalIndex[2], ambiguity.KnownParentIdentities[2]);
-            Assert.Equal(new[] { 1, 2, 3 }, child.UnmappedPhysicalIndices);
+            Assert.Equal(new[] { 2, 3 }, child.UnmappedPhysicalIndices);
             Assert.All(ambiguity.AfterIndices,
                 index => Assert.False(child.TryGetLogicalIdentity(index, out _)));
             Assert.Equal(AlignmentConfidence.None, ambiguity.Confidence);
@@ -151,10 +152,10 @@ namespace ExcelPowerTools.Tests.Comparison
         public void Later_deletion_of_unresolved_indices_does_not_invent_their_identities()
         {
             AlignmentTable rootTable = Table(
-                new[] { "A" }, new[] { "X" }, new[] { "X" }, new[] { "B" });
+                new[] { "A" }, new[] { "X" }, new[] { "X" }, new[] { "Y" }, new[] { "B" });
             AlignmentTable ambiguousTable = Table(
-                new[] { "A" }, new[] { "X" }, new[] { "X" }, new[] { "X" }, new[] { "B" });
-            AlignmentTable finalTable = Table(new[] { "A" }, new[] { "B" });
+                new[] { "A" }, new[] { "Y" }, new[] { "X" }, new[] { "X" }, new[] { "B" });
+            AlignmentTable finalTable = Table(new[] { "A" }, new[] { "Y" }, new[] { "B" });
             LogicalAxisIdentityProjection root = LogicalAxisIdentityProjector.CreateRoot(
                 "project", "sheet", "r1", LogicalAxisKind.Row, rootTable.RowCount);
             LogicalAxisIdentityProjection ambiguous = LogicalAxisIdentityProjector.Propagate(
@@ -170,15 +171,16 @@ namespace ExcelPowerTools.Tests.Comparison
                 TabularAlignmentEngine.AlignRows(ambiguousTable, finalTable));
 
             Assert.Equal(ambiguous.IdentityByPhysicalIndex[0], final.IdentityByPhysicalIndex[0]);
-            Assert.Equal(ambiguous.IdentityByPhysicalIndex[4], final.IdentityByPhysicalIndex[1]);
+            Assert.Equal(ambiguous.IdentityByPhysicalIndex[1], final.IdentityByPhysicalIndex[1]);
+            Assert.Equal(ambiguous.IdentityByPhysicalIndex[4], final.IdentityByPhysicalIndex[2]);
             LogicalAxisStructuralEvent[] unresolvedDeletions = final.StructuralEvents
                 .Where(item => item.Kind == LogicalAxisStructuralEventKind.Deletion &&
                                item.LogicalIdentityId.Length == 0)
                 .ToArray();
-            Assert.Equal(3, unresolvedDeletions.Length);
+            Assert.Equal(2, unresolvedDeletions.Length);
             Assert.All(unresolvedDeletions,
                 item => Assert.Equal(AlignmentConfidence.None, item.Confidence));
-            Assert.Equal(3, final.Ambiguities.Count(
+            Assert.Equal(2, final.Ambiguities.Count(
                 item => item.Kind == LogicalAxisAmbiguityKind.MissingParentIdentity));
             Assert.DoesNotContain(final.IdentityByPhysicalIndex.Values,
                 identity => identity == root.IdentityByPhysicalIndex[1] ||

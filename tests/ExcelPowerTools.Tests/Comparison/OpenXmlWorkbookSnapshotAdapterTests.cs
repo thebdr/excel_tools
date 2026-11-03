@@ -98,29 +98,79 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
-        public void Date_serials_retain_the_workbook_1900_or_1904_context_conservatively()
+        public void Numeric_stored_and_calculated_values_ignore_date_format_and_workbook_date_system()
         {
+            Cell styledCalculated = Formula("B1", "1+1", "45000", CellValues.Number);
+            styledCalculated.StyleIndex = 1U;
             byte[] date1900Bytes = OpenXmlWorkbookFixture.Create(
-                new[] { Sheet("Data", 1, null, StyledNumber("A1", "45000", 1), Number("B1", "45000")) },
+                new[] { Sheet("Data", 1, null, StyledNumber("A1", "45000", 1), styledCalculated) },
                 includeDateStyle: true);
             byte[] date1904Bytes = OpenXmlWorkbookFixture.Create(
-                new[] { Sheet("Data", 1, null, StyledNumber("A1", "45000", 1), Number("B1", "45000")) },
-                date1904: true,
-                includeDateStyle: true);
+                new[]
+                {
+                    Sheet("Data", 1, null,
+                        Number("A1", "45000"),
+                        Formula("B1", "1+1", "45000", CellValues.Number))
+                },
+                date1904: true);
 
             OpenXmlWorkbookSnapshot date1900 = OpenXmlWorkbookSnapshotAdapter.FromBytes("r1900", date1900Bytes);
             OpenXmlWorkbookSnapshot date1904 = OpenXmlWorkbookSnapshotAdapter.FromBytes("r1904", date1904Bytes);
 
             CanonicalValue value1900 = date1900.Sheets[0].Snapshot.Cells["A1"].ConstantValue;
             CanonicalValue value1904 = date1904.Sheets[0].Snapshot.Cells["A1"].ConstantValue;
-            Assert.Equal(CanonicalValueKind.DateSerial, value1900.Kind);
-            Assert.Equal(ExcelDateSystem.Date1900, value1900.DateSystem);
-            Assert.Equal(CanonicalValueKind.DateSerial, value1904.Kind);
-            Assert.Equal(ExcelDateSystem.Date1904, value1904.DateSystem);
-            Assert.NotEqual(value1900, value1904);
+            Assert.Equal(CanonicalValue.Number(45000D), value1900);
+            Assert.Equal(value1900, value1904);
+            Assert.Equal(
+                date1900.Sheets[0].Snapshot.Cells["B1"].CachedResult,
+                date1904.Sheets[0].Snapshot.Cells["B1"].CachedResult);
+            Assert.Empty(ExactComparisonEngine.Compare(
+                date1900.Sheets[0].Snapshot,
+                date1904.Sheets[0].Snapshot));
+        }
 
-            Assert.Equal(CanonicalValueKind.Number, date1900.Sheets[0].Snapshot.Cells["B1"].ConstantValue.Kind);
-            Assert.Equal(CanonicalValueKind.Number, date1904.Sheets[0].Snapshot.Cells["B1"].ConstantValue.Kind);
+        [Fact]
+        public void Invalid_style_index_does_not_block_readable_numeric_cell_evidence()
+        {
+            OpenXmlWorkbookSnapshot result = OpenXmlWorkbookSnapshotAdapter.FromBytes(
+                "invalid-style",
+                OpenXmlWorkbookFixture.Create(new[]
+                {
+                    Sheet("Data", 1, null, StyledNumber("A1", "45000", 99U)),
+                }));
+
+            OpenXmlWorksheetSnapshot sheet = Assert.Single(result.Sheets);
+            OpenXmlCoverageMessage styleFinding = Assert.Single(sheet.CoverageMessages, item =>
+                item.Code == OpenXmlCoverageCodes.InvalidCellStyleIndex);
+            Assert.True(styleFinding.AffectsExactComparison);
+            Assert.False(styleFinding.AffectsExactCellComparison);
+            Assert.True(sheet.CanAssertExactCellEquality);
+            Assert.True(result.CanAssertExactCellEquality);
+            Assert.Equal(CanonicalValue.Number(45000D), sheet.Snapshot.Cells["A1"].ConstantValue);
+        }
+
+        [Fact]
+        public void Missing_sheet_id_and_unknown_visibility_do_not_block_readable_cell_evidence()
+        {
+            OpenXmlWorkbookFixture.SheetDefinition definition =
+                Sheet("Data", 1, null, InlineString("A1", "readable"));
+            definition.OmitSheetId = true;
+            definition.RawState = "future-visibility";
+
+            OpenXmlWorkbookSnapshot result = OpenXmlWorkbookSnapshotAdapter.FromBytes(
+                "sheet-metadata",
+                OpenXmlWorkbookFixture.Create(new[] { definition }));
+
+            OpenXmlWorksheetSnapshot sheet = Assert.Single(result.Sheets);
+            Assert.Null(sheet.SheetId);
+            Assert.Equal(OpenXmlSheetVisibility.Unknown, sheet.Visibility);
+            Assert.Contains(sheet.CoverageMessages, item =>
+                item.Code == OpenXmlCoverageCodes.MissingSheetId && !item.AffectsExactCellComparison);
+            Assert.Contains(sheet.CoverageMessages, item =>
+                item.Code == OpenXmlCoverageCodes.UnknownSheetVisibility && !item.AffectsExactCellComparison);
+            Assert.True(sheet.CanAssertExactCellEquality);
+            Assert.True(result.CanAssertExactCellEquality);
+            Assert.Equal("readable", sheet.Snapshot.Cells["A1"].ConstantValue.ExactText);
         }
 
         [Fact]
@@ -404,6 +454,38 @@ namespace ExcelPowerTools.Tests.Comparison
             Assert.Throws<InvalidDataException>(() => OpenXmlWorkbookSnapshotAdapter.FromBytes(
                 "bounded",
                 excessiveEntryEnvelope));
+        }
+
+        [Fact]
+        public void Physical_cell_budget_counts_duplicate_and_malformed_elements_before_canonicalization()
+        {
+            byte[] duplicate = OpenXmlWorkbookFixture.Create(new[]
+            {
+                Sheet("Data", 1, null, Number("A1", "1"), Number("A1", "2")),
+            });
+            var malformedCell = new Cell(new CellValue("2"))
+            {
+                CellReference = "BAD",
+                DataType = CellValues.Number,
+            };
+            byte[] malformed = OpenXmlWorkbookFixture.Create(new[]
+            {
+                Sheet("Data", 1, null, Number("A1", "1"), malformedCell),
+            });
+
+            InvalidDataException duplicateFailure = Assert.Throws<InvalidDataException>(() =>
+                OpenXmlWorkbookSnapshotAdapter.FromBytesWithCellLimitForTesting(
+                    "duplicate-budget",
+                    duplicate,
+                    1));
+            InvalidDataException malformedFailure = Assert.Throws<InvalidDataException>(() =>
+                OpenXmlWorkbookSnapshotAdapter.FromBytesWithCellLimitForTesting(
+                    "malformed-budget",
+                    malformed,
+                    1));
+
+            Assert.Contains("physical cell elements", duplicateFailure.Message, StringComparison.Ordinal);
+            Assert.Contains("physical cell elements", malformedFailure.Message, StringComparison.Ordinal);
         }
 
         private static OpenXmlWorkbookFixture.SheetDefinition Sheet(

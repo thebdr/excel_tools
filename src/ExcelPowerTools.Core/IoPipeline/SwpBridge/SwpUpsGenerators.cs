@@ -12,12 +12,42 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     /// back to the IO list's PHT_* rows for address and electrical identity. Strobe-device alarms
     /// come from StrobeDevice.csv (TYPE_ID / REFERENCE_BELT_ID / REFERENCE_CABINET_ID) expanded
     /// through the editable templates. Generated entries carry the legacy markers ("AP", "ASD")
-    /// and implicitly skip the electrical-label checks.
+    /// and implicitly skip the electrical-label checks. A strobe entry (and a photocell whose
+    /// PHT row is missing) carries NO electrical identity: the diff never writes an empty
+    /// FU / Location / Device, so the SWP row's own identity stays.
     /// </summary>
     public static class SwpUpsGenerators
     {
         // Sensor.csv / StrobeDevice.csv column layout (semicolon):
         private const int ColKey = 1, ColTag = 2, ColSystem = 3, ColDevice = 5, ColValue = 7;
+
+        /// <summary>
+        /// Substitutes a producer row's templates: {sys} {belt} {bit} {n} {sensor}, each taking an
+        /// optional :format ({belt:000}). Deliberately the same placeholder shape the mnemonic
+        /// map's own templates use, so one convention covers the whole sheet.
+        /// </summary>
+        private static string Fill(string template, int system, int belt, int bit, int photocell,
+            int sensorNumber)
+        {
+            return System.Text.RegularExpressions.Regex.Replace(template ?? "",
+                @"\{(?<name>[a-zA-Z]+)(?::(?<format>[^}]+))?\}", match =>
+                {
+                    string format = match.Groups["format"].Success ? match.Groups["format"].Value : "";
+                    int value;
+                    switch (match.Groups["name"].Value.ToLowerInvariant())
+                    {
+                        case "sys": value = system; break;
+                        case "belt": value = belt; break;
+                        case "bit": value = bit; break;
+                        case "n": value = photocell; break;
+                        case "sensor": value = sensorNumber; break;
+                        default: return match.Value;   // unknown placeholder stays visible
+                    }
+                    return format.Length > 0
+                        ? value.ToString(format, CultureInfo.InvariantCulture)
+                        : value.ToString(CultureInfo.InvariantCulture);
+                });
+        }
 
         private sealed class Belt
         {
@@ -29,11 +59,23 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
         // ---- photocells -------------------------------------------------------------------
 
+        /// <summary><paramref name="rule"/> is the _Mnemonics producer row (null = the shipped
+        /// constants). Only the turnable parts come from it — the belt assignment and the ordering
+        /// along the belt are bespoke and stay here.</summary>
         public static List<DiagnosticEntry> GeneratePhotocellAlarms(IEnumerable<string> sensorCsvLines,
-            IReadOnlyList<IoRowData> ioRows, List<SwpLogEntry> log)
+            IReadOnlyList<IoRowData> ioRows, List<SwpLogEntry> log, SwpMnemonicRule rule = null)
         {
             var entries = new List<DiagnosticEntry>();
             if (sensorCsvLines == null) return entries;
+
+            int firstBit = rule?.Param("firstBit", 50) ?? 50;
+            string mark = rule?.Param("mark", "AP") ?? "AP";
+            string tsRef = rule?.Param("tsRef", "TS_031") ?? "TS_031";
+            string descTemplate = rule?.Param("desc", "Sensor Fault #{sensor}") ?? "Sensor Fault #{sensor}";
+            string emitTemplate = (rule?.Emit ?? "").Length > 0
+                ? rule.Emit : "ALLB_{sys}_{belt:000}_{bit:00}";
+            string seekTemplate = (rule?.Match ?? "").Length > 0
+                ? rule.Match : "PHT_{sys}_{n:000}_000";
 
             var belts = new List<Belt>();
             var beltByKey = new Dictionary<string, Belt>();
@@ -90,25 +132,28 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     .OrderBy(p => belt.Positions.TryGetValue(p, out long pos) ? pos : 0L)
                     .ToList();
 
-                int bit = 50;
+                // The turnable constants come from the _Mnemonics producer row; the ordering above
+                // and the belt assignment are the bespoke part and stay here.
+                int bit = firstBit;
                 foreach (int photocell in ordered)
                 {
-                    string mnemonic = "ALLB_" + belt.System + "_" +
-                        belt.Index.ToString("000", CultureInfo.InvariantCulture) + "_" +
-                        bit.ToString("00", CultureInfo.InvariantCulture);
-                    string photocellName = "PHT_" + belt.System + "_" +
-                        photocell.ToString("000", CultureInfo.InvariantCulture) + "_000";
+                    string mnemonic = Fill(emitTemplate,
+                        belt.System, belt.Index, bit, photocell, sensorNumber: bit - firstBit + 1);
+                    string photocellName = Fill(seekTemplate,
+                        belt.System, belt.Index, bit, photocell, sensorNumber: bit - firstBit + 1);
 
                     var entry = new DiagnosticEntry
                     {
                         Mnemonic = mnemonic,
                         RawMnemonic = mnemonic,
-                        GeneratedBy = "AP",
-                        TsRef = "TS_031",
+                        GeneratedBy = mark,
+                        TsRef = tsRef,
                         CardSheet = "(generated)",
                     };
 
-                    int sensorNumber = bit - 49;
+                    int sensorNumber = bit - firstBit + 1;
+                    string description = Fill(descTemplate,
+                        belt.System, belt.Index, bit, photocell, sensorNumber);
                     if (photocellRows.TryGetValue(photocellName, out IoRowData source))
                     {
                         if (IoListLogic.TryParseAddress((source.AddressCell ?? "").Trim(),
@@ -125,13 +170,14 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                         entry.Location = (source.Location ?? "").Trim();
                         entry.Device = (source.Device ?? "").Trim();
                         // The legacy synthesized J text — the description pipeline runs over it.
-                        entry.Desc1A = "Sensor Fault #" + sensorNumber + " " + entry.Location + entry.Device;
+                        entry.Desc1A = description + " " + entry.Location + entry.Device;
                     }
                     else
                     {
-                        entry.Desc1A = "Sensor Fault #" + sensorNumber;
+                        entry.Desc1A = description;
                         log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
-                            photocellName + " not found in the IO list — the belt alarm has no address",
+                            photocellName + " not found in the IO list — the belt alarm has no address " +
+                            "and no electrical identity (the SWP row keeps its own)",
                             mnemonic: mnemonic));
                     }
 

@@ -31,10 +31,27 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
         public string[] Fields;
         public bool Disabled;   // '#' marker (first record)
 
-        /// <summary>The record is a VIRTUAL twin of the IO point (type 5/6/9/10 carrying the same
+        /// <summary>The record is a VIRTUAL twin of the IO point (type 5/6/9/10/13/14 carrying the same
         /// mnemonic): it looks like the signal is there, but it acquires nothing from the field.
         /// Bound so the row shows it — and offers "change type" — instead of integrating a double.</summary>
         public bool Virtual;
+
+        /// <summary>The record carries the row's name but sits at ANOTHER address than the IO row
+        /// ("found at a different address"): paired by name, flagged, and aligned from either side.</summary>
+        public bool Moved;
+
+        /// <summary>Moved only: another CSV record already occupies the IO row's address, so moving
+        /// this record there would collide (a swap, or a shifted block) — the CSV-side alignment is not offered.</summary>
+        public bool IoAddressOccupiedInCsv;
+
+        /// <summary>Moved only: another IO row of the sheet already holds the CSV record's address,
+        /// so writing it into the IO list would duplicate an address — the IO-side alignment is not offered.</summary>
+        public bool CsvAddressOccupiedInIo;
+
+        /// <summary>Moved only: the record is on ANOTHER card (<see cref="CsvCard"/>) than this sheet's. Only the
+        /// CSV side can be aligned then — its Card field moves with its address.</summary>
+        public bool OtherCard;
+        public string CsvCard = "";
 
         public List<int> RecordIndexes = new List<int>();
         public List<string[]> AllFields = new List<string[]>();
@@ -187,7 +204,7 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
     public sealed class IoBridgeJoinOptions
     {
         /// <summary>
-        /// Regex over CSV mnemonics: matching VIRTUAL rows (types 5/6/9/10) join the comparison BY
+        /// Regex over CSV mnemonics: matching VIRTUAL rows (types 5/6/9/10/13/14) join the comparison BY
         /// NAME against IO-list rows carrying that mnemonic — for virtuals that mirror real IO-list
         /// entries (the CLASSDIAGAL pattern). Empty = virtuals stay out, as always.
         /// </summary>
@@ -203,7 +220,7 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
     /// <summary>
     /// Builds the workspace model: for every selected card sheet, the IO-list rows in their own order
     /// (the spine) joined to the CSV record at the same physical point, plus the CSV records of that
-    /// card no spine row claimed. Same signal taxonomy as the pull commands: virtual (types 5/6/9/10)
+    /// card no spine row claimed. Same signal taxonomy as the pull commands: virtual (types 5/6/9/10/13/14)
     /// CSV rows never join by address, bus-diagnostic (type 11) rows join by node against module rows.
     ///
     /// Claiming is NAME-AWARE in two passes: when several IO rows share one address (a struct binding
@@ -236,8 +253,8 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
 
             var model = new BridgeWorkspaceModel
             {
-                InputsMap = inputs != null ? CsvColumnsMap.Locate(inputs) : null,
-                OutputsMap = outputs != null ? CsvColumnsMap.Locate(outputs) : null,
+                InputsMap = inputs != null ? CsvColumnsMap.Locate(inputs, PlantCsvKind.Inputs) : null,
+                OutputsMap = outputs != null ? CsvColumnsMap.Locate(outputs, PlantCsvKind.Outputs) : null,
             };
             model.InputsFieldHeaders = CsvCanonical.FieldHeaders(model.InputsMap);
             model.OutputsFieldHeaders = CsvCanonical.FieldHeaders(model.OutputsMap);
@@ -245,16 +262,54 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
             var inputsIndex = new CsvSideIndex(inputs, model.InputsMap, BridgeTarget.InputsCsv, 'I', includeVirtuals);
             var outputsIndex = new CsvSideIndex(outputs, model.OutputsMap, BridgeTarget.OutputsCsv, 'O', includeVirtuals);
 
+            var built = new List<KeyValuePair<BridgeSheetModel, List<PendingEntry>>>();
             foreach (CardSheetGrid card in cards ?? new List<CardSheetGrid>())
             {
-                BridgeSheetModel sheet = BuildSheet(card, model, inputsIndex, outputsIndex, excludeIo);
-                if (sheet != null) model.Sheets.Add(sheet);
+                var sheetEntries = new List<PendingEntry>();
+                BridgeSheetModel sheet = BuildSheet(card, model, inputsIndex, outputsIndex, excludeIo, sheetEntries);
+                if (sheet == null) continue;
+                model.Sheets.Add(sheet);
+                built.Add(new KeyValuePair<BridgeSheetModel, List<PendingEntry>>(sheet, sheetEntries));
             }
+
+            ClaimMovedAcrossCards(built);
 
             // CSV records of a selected card that no spine row claimed — the CSV-only bucket.
             CollectCsvOnly(model, inputsIndex, BridgeTarget.InputsCsv);
             CollectCsvOnly(model, outputsIndex, BridgeTarget.OutputsCsv);
             return model;
+        }
+
+        /// <summary>
+        /// The last name pass, once EVERY selected card has claimed its own records: a signal row still
+        /// without a record takes the unclaimed record of its name on ANOTHER card. It runs after all
+        /// sheets so a record belonging to a selected card is never taken by an earlier sheet's row
+        /// before its own sheet has claimed it by address. The row is flagged moved AND off-card:
+        /// only the CSV side can be aligned (its Card field moves too) — an IO-list address cannot
+        /// say "card 2", that is a different sheet.
+        /// </summary>
+        private static void ClaimMovedAcrossCards(List<KeyValuePair<BridgeSheetModel, List<PendingEntry>>> built)
+        {
+            foreach (KeyValuePair<BridgeSheetModel, List<PendingEntry>> pair in built)
+                foreach (PendingEntry entry in pair.Value)
+                {
+                    if (entry.Excluded || entry.Row.Csv != null || entry.Row.Kind != BridgeRowKind.Signal) continue;
+                    List<int> found = entry.Side.ClaimMovedByName(entry.NameKeys, null);
+                    if (found.Count == 0) continue;
+
+                    entry.Claimed.AddRange(found);
+                    entry.Moved = true;
+                    Bind(entry.Row, entry.Side, entry.Claimed, entry.Row.Signal.Mnemonic, moved: true);
+                    CsvBinding binding = entry.Row.Csv;
+                    string board = entry.Side.BoardOfRecord(binding.RecordIndex);
+                    if (board != pair.Key.Card)
+                    {
+                        binding.OtherCard = true;
+                        binding.CsvCard = board;
+                        entry.Row.RowLabel += " · card " + board;
+                    }
+                    FlagCollisions(entry, pair.Value);
+                }
         }
 
         private static Regex CompileOrNull(string pattern)
@@ -273,12 +328,13 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
             public List<string> NameKeys;    // the row's mnemonic keys
             public bool Excluded;
             public bool VirtualTwin;         // the claim is a virtual record carrying the row's name
+            public bool Moved;               // the claim is a record of the row's name at another address
             public List<int> Claimed = new List<int>();
         }
 
         private static BridgeSheetModel BuildSheet(
             CardSheetGrid card, BridgeWorkspaceModel model, CsvSideIndex inputs, CsvSideIndex outputs,
-            Regex excludeIo)
+            Regex excludeIo, List<PendingEntry> keep)
         {
             if (card == null ||
                 !IoListLogic.TryParseCardSheetName(card.SheetName, out string rack, out string slot, out string cardNo))
@@ -404,6 +460,20 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                 if (!entry.Excluded)
                     entry.Claimed.AddRange(entry.Side.ClaimNameMatches(entry.ClaimKey, entry.NameKeys));
 
+            // Phase 1b — found at a different address: a signal row the address pass could not pair
+            // takes the unclaimed real record of the same card that carries its name wherever it
+            // sits. BEFORE the positional fallback, so a record is not taken by whichever unrelated
+            // IO row happens to occupy its old address (a shifted block, a swapped pair). Only an
+            // unambiguous name counts: two records of one name are left to the user.
+            foreach (PendingEntry entry in entries)
+            {
+                if (entry.Excluded || entry.Claimed.Count > 0 || entry.Row.Kind != BridgeRowKind.Signal) continue;
+                List<int> moved = entry.Side.ClaimMovedByName(entry.NameKeys, sheet.Card);
+                if (moved.Count == 0) continue;
+                entry.Claimed.AddRange(moved);
+                entry.Moved = true;
+            }
+
             // Phase 2 — positional fallback for rows the names left empty-handed.
             foreach (PendingEntry entry in entries)
                 if (!entry.Excluded && entry.Claimed.Count == 0)
@@ -417,7 +487,7 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                     entry.Claimed.AddRange(entry.Side.ClaimVirtualsByName(entry.NameKeys));
 
             // Phase 3b — a signal STILL without a record whose mnemonic some other VIRTUAL record
-            // carries (type 5/6/9/10): that record is its twin. It binds FLAGGED — the point looks
+            // carries (type 5/6/9/10/13/14): that record is its twin. It binds FLAGGED — the point looks
             // present but acquires nothing from the field — so the row shows the twin and offers a
             // type change instead of integrating a double.
             foreach (PendingEntry entry in entries)
@@ -431,15 +501,41 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
 
             foreach (PendingEntry entry in entries)
             {
-                if (!entry.Excluded) Bind(entry.Row, entry.Side, entry.Claimed, entry.Row.Signal.Mnemonic, entry.VirtualTwin);
+                if (!entry.Excluded)
+                {
+                    Bind(entry.Row, entry.Side, entry.Claimed, entry.Row.Signal.Mnemonic, entry.VirtualTwin, entry.Moved);
+                    if (entry.Moved && entry.Row.Csv != null) FlagCollisions(entry, entries);
+                }
+                keep.Add(entry);
                 sheet.SpineRows.Add(entry.Row);
                 Register(model, entry.Row);
             }
             return sheet;
         }
 
+        /// <summary>
+        /// Whether aligning a moved row either way would collide: the IO row's address already holds
+        /// another CSV record, or the CSV record's address already belongs to another IO row.
+        /// </summary>
+        private static void FlagCollisions(PendingEntry moved, List<PendingEntry> entries)
+        {
+            CsvBinding binding = moved.Row.Csv;
+
+            // The moved row's own record is not at its IO address (that is what "moved" means), so
+            // ANY record there — claimed by a neighbour or left over — belongs to something else.
+            if (moved.Side.HasRecordAt(moved.ClaimKey)) binding.IoAddressOccupiedInCsv = true;
+
+            string csvKey = moved.Side.AddressKeyOfRecord(binding.RecordIndex);
+            foreach (PendingEntry other in entries)
+            {
+                if (ReferenceEquals(other, moved) || other.Row.Kind != BridgeRowKind.Signal) continue;
+                if (ReferenceEquals(other.Side, moved.Side) && csvKey.Length > 0 && other.ClaimKey == csvKey)
+                    binding.CsvAddressOccupiedInIo = true;
+            }
+        }
+
         private static void Bind(BridgeRow row, CsvSideIndex side, List<int> recordIdxs, string ioMnemonic,
-            bool virtualTwin = false)
+            bool virtualTwin = false, bool moved = false)
         {
             if (recordIdxs == null || recordIdxs.Count == 0)
             {
@@ -482,6 +578,13 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                 binding.Virtual = true;
                 row.RowLabel += " · virtual twin";
                 row.MatchVerdict = "virtual";
+            }
+            else if (moved)
+            {
+                // Never reads as a clean match: the names agree, the address does not.
+                binding.Moved = true;
+                row.RowLabel += " · moved";
+                row.MatchVerdict = "moved";
             }
         }
 
@@ -610,13 +713,15 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
             private readonly Dictionary<string, List<int>> _byNode = new Dictionary<string, List<int>>();
             private readonly Dictionary<string, List<int>> _virtualByName = new Dictionary<string, List<int>>();
             private readonly Dictionary<string, List<int>> _anyVirtualByName = new Dictionary<string, List<int>>();
+            private readonly Dictionary<string, List<int>> _realByName = new Dictionary<string, List<int>>();   // non-virtual, non-bus
             private readonly List<Row> _rows = new List<Row>();
 
             private sealed class Row
             {
                 public int RecordIndex;
                 public string Board = "", Address = "", NameKey = "";
-                public bool Virtual, Claimed;
+                public bool Virtual, Bus, Claimed;
+                public string AddressKey = "";   // "" when the record carries no readable offset/bit
             }
 
             public sealed class Leftover
@@ -664,6 +769,7 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                     }
                     else if (IoListLogic.IsBusDiagnosticType(type))
                     {
+                        row.Bus = true;
                         row.Address = IoListLogic.ModuleAddress(node);
                         Add(_byNode, IoListLogic.NodeKey(board, node), _rows.Count);
                     }
@@ -673,8 +779,10 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                         if (off.Trim().Length > 0 && bit.Trim().Length > 0)
                         {
                             row.Address = IoListLogic.BuildAddress(_direction, node, off, bit);
-                            Add(_byAddress, Key(node, off, board, bit), _rows.Count);
+                            row.AddressKey = Key(node, off, board, bit);
+                            Add(_byAddress, row.AddressKey, _rows.Count);
                         }
+                        if (name.Length > 0) Add(_realByName, row.NameKey, _rows.Count);
                     }
                     _rows.Add(row);
                 }
@@ -712,6 +820,54 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                     taken.Add(row.RecordIndex);
                 }
                 return taken;
+            }
+
+            /// <summary>
+            /// Pass 1b: for each of the row's names, the UNCLAIMED real record of that name on
+            /// <paramref name="card"/> (any card when null) — wherever its address is — but only when
+            /// the name is carried by exactly one record (a name carried twice is ambiguous, not a move).
+            /// </summary>
+            public List<int> ClaimMovedByName(List<string> nameKeys, string card)
+            {
+                var taken = new List<int>();
+                if (nameKeys == null) return taken;
+                foreach (string key in nameKeys)
+                {
+                    if (!_realByName.TryGetValue(key, out List<int> list)) continue;
+                    var candidates = new List<int>();
+                    foreach (int rowIdx in list)
+                    {
+                        Row row = _rows[rowIdx];
+                        if (!row.Claimed && (card == null || row.Board == card)) candidates.Add(rowIdx);
+                    }
+                    if (candidates.Count != 1 || list.Count != 1) continue;
+
+                    _rows[candidates[0]].Claimed = true;
+                    taken.Add(_rows[candidates[0]].RecordIndex);
+                }
+                return taken;
+            }
+
+            public string BoardOfRecord(int recordIndex)
+            {
+                foreach (Row row in _rows)
+                    if (row.RecordIndex == recordIndex) return row.Board;
+                return "";
+            }
+
+            /// <summary>True when any CSV record (claimed or not) sits at the address key.</summary>
+            public bool HasRecordAt(string claimKey)
+            {
+                foreach (int _ in RowsAt(claimKey)) return true;
+                return false;
+            }
+
+            /// <summary>The address key of one record ("" when it has none) — the join key an IO row would claim it by.</summary>
+            public string AddressKeyOfRecord(int recordIndex)
+            {
+                foreach (Row row in _rows)
+                    if (row.RecordIndex == recordIndex) return row.AddressKey;
+                return "";
             }
 
             /// <summary>Pass 3: opted-in virtual records carrying any of the row's mnemonics —

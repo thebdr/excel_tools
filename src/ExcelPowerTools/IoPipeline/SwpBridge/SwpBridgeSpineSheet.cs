@@ -62,8 +62,24 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         /// setting the bridge writes its composed text, so ticking KEEPS CONFIG's; under "never
         /// overwrite CONFIG_PLANT descriptions" it is the IO text that a tick restores.
         /// </summary>
-        internal static string TrustConfigHeader(bool workspaceDefault) =>
-            workspaceDefault ? "[Write IO text]" : "[Keep CONFIG text]";
+        internal static string TrustConfigHeader(SwpConfigMode workspaceDefault) =>
+            workspaceDefault == SwpConfigMode.KeepConfigText ? "[Write IO text]" : "[Keep CONFIG text]";
+
+        /// <summary>
+        /// The CONFIG_PLANT treatment a row takes with no tick of its own: the destination-sheet
+        /// rule where its SWP sheet matches, the workspace default everywhere else. Both the
+        /// glyph and the double-click flip measure against THIS — against the default alone, a
+        /// tick on a rule-governed sheet would show nothing and do nothing.
+        /// </summary>
+        internal static SwpConfigMode RowConfigMode(SwpBridgeSession session, SwpSpineRow row)
+        {
+            SwpConfigSheetRule rule = SwpConfigSheetRule.Create(
+                session.Settings.ConfigSheetRulePattern, session.Settings.ConfigSheetRuleMode);
+            string sheet = row?.Mapped != null && row.Mapped.Ok
+                ? (row.Mapped.Coordinate.SheetName ?? "")
+                : "";
+            return rule.ModeFor(sheet) ?? session.Settings.ConfigMode;
+        }
 
         private static int Rgb(int r, int g, int b) => r | (g << 8) | (b << 16);
 
@@ -99,6 +115,9 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         public static void Render(dynamic sheet, SwpBridgeSession session)
         {
             SwpWorkspaceModel model = session.Model;
+            // An override edit re-renders in place: the filters the user (or the dashboard's
+            // filter-to-sheet) applied are VIEW state and must survive the recompute.
+            List<CapturedFilter> filters = CaptureAutoFilter(sheet);
             sheet.Cells.Clear();
             try { sheet.Cells.FormatConditions.Delete(); } catch { }
             try { sheet.Name = SwpBridgeWorkspace.SpineSheetName; } catch { }
@@ -113,7 +132,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             var headers = new object[1, ColumnCount];
             for (int c = 0; c < ColumnCount; c++) headers[0, c] = Headers[c];
             headers[0, ColFldMode - 1] = FldModeHeader(session.Settings.MismatchMode);
-            headers[0, ColTrustConfig - 1] = TrustConfigHeader(session.Settings.TrustConfigPlant);
+            headers[0, ColTrustConfig - 1] = TrustConfigHeader(session.Settings.ConfigMode);
             dynamic headerRange = sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(HeaderRow, ColumnCount));
             headerRange.NumberFormat = "@";
             WriteBlock(sheet, HeaderRow, 1, headers);
@@ -144,11 +163,16 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             {
                 var overrides = session.OverridesByMnemonic();
                 var repairs = RepairsByTargetRow(session);
+                SwpFldSheetRule fldSheetRule = SwpFldSheetRule.Create(
+                    session.Settings.FldSheetRulePattern, session.Settings.FldSheetRuleMode);
+                SwpConfigSheetRule configSheetRule = SwpConfigSheetRule.Create(
+                    session.Settings.ConfigSheetRulePattern, session.Settings.ConfigSheetRuleMode);
                 var data = new object[rows, ColumnCount];
                 for (int r = 0; r < rows; r++)
                 {
                     FillRow(data, r, model.Rows[r], overrides, repairs,
-                        session.Settings.MismatchMode, session.Settings.TrustConfigPlant);
+                        session.Settings.MismatchMode, session.Settings.ConfigMode,
+                        fldSheetRule, configSheetRule);
                     session.ModelRowByWorksheetRow[FirstDataRow + r] = r;
                     session.WorksheetRowByModelRow[r] = FirstDataRow + r;
                 }
@@ -190,7 +214,9 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     double wanted = Math.Max(6.0, Math.Max(width, headerNeed));
                     if (Math.Abs(wanted - width) > 0.1) column.ColumnWidth = wanted;
                 }
-                sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(lastRow, ColumnCount)).AutoFilter();
+                dynamic filterRange = sheet.Range(sheet.Cells(HeaderRow, 1), sheet.Cells(lastRow, ColumnCount));
+                filterRange.AutoFilter();
+                RestoreAutoFilter(filterRange, filters);
             }
             catch { }
 
@@ -207,6 +233,66 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             catch { }
 
             try { activeCell?.Select(); } catch { }
+        }
+
+        private sealed class CapturedFilter
+        {
+            public int Field;
+            public object Criteria1;
+            public object Criteria2;   // null = single-criteria filter
+            public int Operator;       // 0 = plain criteria, no operator argument
+        }
+
+        /// <summary>
+        /// The active AutoFilter criteria, read before the sheet is cleared. Per column and
+        /// best-effort: value, text, number and date criteria round-trip; a filter Excel cannot
+        /// express as criteria (by colour, by icon) throws on read and that column is dropped.
+        /// Null when the sheet has no filtering to preserve.
+        /// </summary>
+        private static List<CapturedFilter> CaptureAutoFilter(dynamic sheet)
+        {
+            try
+            {
+                dynamic autoFilter = sheet.AutoFilter;
+                if (autoFilter == null) return null;
+                dynamic columns = autoFilter.Filters;
+                int count = (int)columns.Count;
+                var captured = new List<CapturedFilter>();
+                for (int field = 1; field <= count; field++)
+                {
+                    try
+                    {
+                        dynamic filter = columns(field);
+                        if (!(bool)filter.On) continue;
+                        var item = new CapturedFilter { Field = field, Criteria1 = filter.Criteria1 };
+                        try { item.Operator = (int)filter.Operator; } catch { }
+                        try { if (item.Operator != 0) item.Criteria2 = filter.Criteria2; } catch { }
+                        captured.Add(item);
+                    }
+                    catch { }   // colour/icon filters: unreadable — this column's filter is lost
+                }
+                return captured.Count > 0 ? captured : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Re-applies captured criteria onto the freshly created AutoFilter range.</summary>
+        private static void RestoreAutoFilter(dynamic filterRange, List<CapturedFilter> filters)
+        {
+            if (filters == null) return;
+            foreach (CapturedFilter filter in filters)
+            {
+                try
+                {
+                    if (filter.Criteria2 != null)
+                        filterRange.AutoFilter(filter.Field, filter.Criteria1, filter.Operator, filter.Criteria2);
+                    else if (filter.Operator != 0)
+                        filterRange.AutoFilter(filter.Field, filter.Criteria1, filter.Operator);
+                    else
+                        filterRange.AutoFilter(filter.Field, filter.Criteria1);
+                }
+                catch { }   // a criteria set no longer expressible on the new data: skipped
+            }
         }
 
         /// <summary>
@@ -238,7 +324,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         private static void FillRow(object[,] data, int r, SwpSpineRow row,
             Dictionary<string, SwpRowOverride> overrides,
             Dictionary<(string Sheet, int Row), List<SwpProposedEdit>> repairs,
-            SwpMismatchMode workspaceDefault, bool trustConfigDefault)
+            SwpMismatchMode workspaceDefault, SwpConfigMode configDefault,
+            SwpFldSheetRule fldSheetRule, SwpConfigSheetRule configSheetRule)
         {
             DiagnosticEntry e = row.Entry;
             data[r, ColCard - 1] = e.CardSheet;
@@ -291,8 +378,8 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     case SwpField.Desc2U: data[r, ColDesc2New - 1] = edit.Proposed; break;
                     case SwpField.FormulaQ:
                     case SwpField.FormulaR:
-                        formulas = edit.Proposed.StartsWith("CONCAT", StringComparison.Ordinal)
-                            ? "rewrite" : "append";
+                        formulas = SwpDescriptionFormula.IsTruncatingForm(edit.Proposed)
+                            ? "rebuild" : "append";
                         break;
                 }
             }
@@ -314,12 +401,20 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 data[r, ColSkipLabel - 1] = o.SkipLabelCheck ? CheckedGlyph : "";
                 data[r, ColDbIndex - 1] = o.SwpDbIndex.HasValue ? o.SwpDbIndex.Value.ToString() : "";
                 data[r, ColForceIds - 1] = o.ForceElectricalIds ? CheckedGlyph : "";
-                // Ticked only while the row genuinely departs from the default; an override that
-                // says what the default already says is redundant, not a flip.
+                // Ticked only while the row genuinely departs from the treatment it would take
+                // anyway — the destination-sheet rule where its SWP sheet matches, the workspace
+                // default everywhere else. An override that says what that already says is
+                // redundant, not a flip; measuring against the default alone would leave a tick
+                // that overrides the SHEET RULE showing no glyph at all.
+                SwpMismatchMode rowDefault =
+                    fldSheetRule?.ModeFor(TargetOf(row).Sheet) ?? workspaceDefault;
                 data[r, ColFldMode - 1] =
-                    o.FldMode.HasValue && o.FldMode.Value != workspaceDefault ? CheckedGlyph : "";
+                    o.FldMode.HasValue && o.FldMode.Value != rowDefault ? CheckedGlyph : "";
+                SwpConfigMode rowConfigDefault =
+                    configSheetRule?.ModeFor(TargetOf(row).Sheet) ?? configDefault;
                 data[r, ColTrustConfig - 1] =
-                    o.TrustConfigDescriptions.HasValue && o.TrustConfigDescriptions.Value != trustConfigDefault
+                    o.TrustConfigDescriptions.HasValue &&
+                    o.TrustConfigDescriptions.Value != (rowConfigDefault == SwpConfigMode.KeepConfigText)
                         ? CheckedGlyph : "";
                 data[r, ColDesc1Override - 1] = o.Desc1Override;
                 data[r, ColDesc2Override - 1] = o.Desc2Override;

@@ -54,7 +54,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     /// else the dedicated FIELD BUS MODULE FAILURE row serves both languages) and for the
     /// T.S. Ref card of every official phrase; the _Languages constants remain only for
     /// glossary-less workspaces. DESC2 uses the workspace's chosen second language and falls
-    /// back to DESC1 when it comes out blank. Overrides win over everything.
+    /// back to DESC1 when it comes out blank — flagged on the result, because a single-language
+    /// SCADA then shows language-1 text. Overrides win over everything.
     /// </summary>
     public static class SwpDescriptions
     {
@@ -86,6 +87,19 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             public bool BusDescMismatch;
             public string BusIoText = "";
             public string BusChosenEn = "";
+
+            /// <summary>Description 2 came out with no visible character and repeats Description 1:
+            /// language-1 text in the second-language cell (the legacy fallback).</summary>
+            public bool Desc2FromLanguage1;
+
+            /// <summary>Description 2 is a glossary translation of the permanent part followed by the
+            /// LANGUAGE-1 variable part, because the IO list wrote no language-2 one (a part the
+            /// dictionary empties still counts as written — nothing rides then).</summary>
+            public bool Desc2VariablePartFromLanguage1;
+
+            /// <summary>The language-1 text that rode into Description 2 — after both dictionaries,
+            /// which is what the cell shows; "" unless <see cref="Desc2VariablePartFromLanguage1"/>.</summary>
+            public string Desc2RidingText = "";
         }
 
         /// <summary>Everything the composition needs beyond the entry itself.</summary>
@@ -243,19 +257,36 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                 string ioLang2 = MultiReplace(lang2, dictionary2);
                 bool hasIoLang2 = ioLang2.Replace(" ", "").Length > 0;
 
-                // A permanent-part match keeps the variable part alongside (electrical
-                // identity, untranslated); a full-description match consumed everything —
-                // the translation stands alone.
+                // A permanent-part match keeps the variable part alongside (the electrical
+                // identity); a full-description match consumed everything — the translation stands
+                // alone. The variable part rides in LANGUAGE 2 when the IO list has one: that is its
+                // own translation of the part, and a single-language SCADA shows nothing else
+                // ("DISJONCTEUR DÉCLENCHÉ 24V IM 155 ET MODULES I/O", never "… AND I/O MODULE" —
+                // FVZ, 2026-09-10). Only an IO list with no language-2 variable part lets language 1's
+                // ride, and the result says so.
+                //
+                // "Has one" means the IO list WROTE one: a part the dictionary then empties
+                // ("CH1/CH2" under a rule deleting the channel markers — FVT, 2026-09-22) still
+                // counts as written, so nothing rides — never language 1's raw text, which is what
+                // put "CH1/CH2" back into a Description 2 the rules had cleaned. And when language
+                // 1's part does ride, it passes dictionary 1 (it is language-1 text) and then
+                // dictionary 2: text landing in Description 2 always passes dictionary 2 last.
+                string variable2 = MultiReplace(entry.Desc2B, dictionary2);
+                bool ioHasVariable2 = entry.Desc2B.Trim().Length > 0;
+                string ridingVariable = ioHasVariable2
+                    ? variable2
+                    : MultiReplace(MultiReplace(entry.Desc1B, dictionary1), dictionary2);
                 string glossaryText = null;
                 if (signalPair != null && signalPair.Translation.Trim().Length > 0)
                     glossaryText = matchedFullDescription
                         ? signalPair.Translation
-                        : signalPair.Translation + " " + entry.Desc1B;
+                        : signalPair.Translation + " " + ridingVariable;
 
-                if (glossaryText != null && (context.GlossaryTranslateAlways || !hasIoLang2))
-                    desc2 = glossaryText;
-                else
-                    desc2 = ioLang2;
+                bool glossaryWins = glossaryText != null && (context.GlossaryTranslateAlways || !hasIoLang2);
+                desc2 = glossaryWins ? glossaryText : ioLang2;
+                result.Desc2VariablePartFromLanguage1 = glossaryWins && !matchedFullDescription &&
+                    !ioHasVariable2 && ridingVariable.Trim().Length > 0;
+                if (result.Desc2VariablePartFromLanguage1) result.Desc2RidingText = ridingVariable.Trim();
 
                 // The IO list and the standard glossary disagreeing is worth a look either way.
                 if (hasIoLang2 && glossaryText != null &&
@@ -269,7 +300,14 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
 
             // The language-2 formula fell back to DESC1 whenever its own result held no visible
             // character (the second language is frequently unfilled in the IO list).
-            if (desc2.Replace(" ", "").Length == 0) desc2 = desc1;
+            // Language-1 text landing in Description 2 passes dictionary 2 last — except a bus
+            // module's phrase + [profinet name - ip], which no dictionary ever touches: the tag is
+            // the module's identity, not a description to shorten.
+            if (desc2.Replace(" ", "").Length == 0)
+            {
+                desc2 = isProfinet ? desc1 : MultiReplace(desc1, dictionary2);
+                result.Desc2FromLanguage1 = desc2.Replace(" ", "").Length > 0;
+            }
 
             result.Desc2 = desc2;
 

@@ -33,45 +33,49 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
-        public void Same_formula_with_different_cache_is_secondary_only()
+        public void Same_formula_with_different_calculated_value_is_an_independent_primary_change()
         {
             RevisionSnapshot before = Snapshot("before", Formula("A1", "=1+1", "2"));
             RevisionSnapshot after = Snapshot("after", Formula("A1", "=1+1", "3"));
 
             AtomicCellChange change = Assert.Single(ExactComparisonEngine.Compare(before, after));
             Assert.Equal(CellChangeAspect.CachedResult, change.Aspect);
-            Assert.True(change.IsSecondary);
+            Assert.False(change.IsSecondary);
         }
 
         [Fact]
-        public void Formula_change_is_primary_and_suppresses_cache_noise_by_default()
+        public void Formula_and_calculated_value_changes_are_both_reported_by_default()
         {
             RevisionSnapshot before = Snapshot("before", Formula("A1", "=1+1", "2"));
             RevisionSnapshot after = Snapshot("after", Formula("A1", "=1+2", "3"));
 
-            AtomicCellChange change = Assert.Single(ExactComparisonEngine.Compare(before, after));
-            Assert.Equal(CellChangeAspect.Formula, change.Aspect);
-            Assert.Equal("=1+1", change.BeforeText);
-            Assert.Equal("=1+2", change.AfterText);
-        }
-
-        [Fact]
-        public void Cache_change_can_be_retained_when_formula_also_changed()
-        {
-            RevisionSnapshot before = Snapshot("before", Formula("A1", "=1+1", "2"));
-            RevisionSnapshot after = Snapshot("after", Formula("A1", "=1+2", "3"));
-            var options = new ExactComparisonOptions { CompareCachedResultsWhenFormulaChanges = true };
-
-            var changes = ExactComparisonEngine.Compare(before, after, options);
+            var changes = ExactComparisonEngine.Compare(before, after);
 
             Assert.Collection(
                 changes,
-                change => Assert.Equal(CellChangeAspect.Formula, change.Aspect),
-                change => Assert.Equal(CellChangeAspect.CachedResult, change.Aspect));
+                formula =>
+                {
+                    Assert.Equal(CellChangeAspect.Formula, formula.Aspect);
+                    Assert.Equal("=1+1", formula.BeforeText);
+                    Assert.Equal("=1+2", formula.AfterText);
+                },
+                calculated => Assert.Equal(CellChangeAspect.CachedResult, calculated.Aspect));
         }
 
         [Fact]
-        public void Formula_to_constant_transition_keeps_both_atomic_aspects()
+        public void Calculated_value_change_can_be_suppressed_explicitly_when_formula_changed()
+        {
+            RevisionSnapshot before = Snapshot("before", Formula("A1", "=1+1", "2"));
+            RevisionSnapshot after = Snapshot("after", Formula("A1", "=1+2", "3"));
+            var options = new ExactComparisonOptions { CompareCachedResultsWhenFormulaChanges = false };
+
+            AtomicCellChange change = Assert.Single(ExactComparisonEngine.Compare(before, after, options));
+
+            Assert.Equal(CellChangeAspect.Formula, change.Aspect);
+        }
+
+        [Fact]
+        public void Formula_to_constant_transition_keeps_formula_value_and_calculated_aspects()
         {
             RevisionSnapshot before = Snapshot("before", Formula("A1", "=2+2", "4"));
             RevisionSnapshot after = Snapshot("after", Constant("A1", "four"));
@@ -89,6 +93,11 @@ namespace ExcelPowerTools.Tests.Comparison
                 {
                     Assert.Equal(CellChangeAspect.Value, value.Aspect);
                     Assert.Equal(CellChangeKind.Added, value.Kind);
+                },
+                calculated =>
+                {
+                    Assert.Equal(CellChangeAspect.CachedResult, calculated.Aspect);
+                    Assert.Equal(CellChangeKind.Removed, calculated.Kind);
                 });
         }
 
@@ -104,12 +113,17 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
-        public void Explicit_blank_versus_missing_cell_is_secondary_presence_evidence()
+        public void Explicit_blank_versus_missing_is_package_noise_unless_presence_is_opted_in()
         {
             RevisionSnapshot before = Snapshot("before");
             RevisionSnapshot after = Snapshot("after", CanonicalCellState.Blank("A1"));
 
-            AtomicCellChange change = Assert.Single(ExactComparisonEngine.Compare(before, after));
+            Assert.Empty(ExactComparisonEngine.Compare(before, after));
+
+            AtomicCellChange change = Assert.Single(ExactComparisonEngine.Compare(
+                before,
+                after,
+                new ExactComparisonOptions { ComparePhysicalPresence = true }));
             Assert.Equal(CellChangeAspect.Presence, change.Aspect);
             Assert.True(change.IsSecondary);
         }
@@ -122,9 +136,15 @@ namespace ExcelPowerTools.Tests.Comparison
 
             var changes = ExactComparisonEngine.Compare(before, after);
 
-            Assert.Equal(new[] { "A1", "A1", "Z9" }, changes.Select(c => c.SubjectKey));
+            Assert.Equal(new[] { "A1", "A1", "A1", "Z9" }, changes.Select(c => c.SubjectKey));
             Assert.Equal(
-                new[] { CellChangeAspect.Formula, CellChangeAspect.Value, CellChangeAspect.Value },
+                new[]
+                {
+                    CellChangeAspect.Formula,
+                    CellChangeAspect.Value,
+                    CellChangeAspect.CachedResult,
+                    CellChangeAspect.Value,
+                },
                 changes.Select(c => c.Aspect));
         }
 

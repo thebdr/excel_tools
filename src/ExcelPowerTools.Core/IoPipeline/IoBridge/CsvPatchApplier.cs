@@ -4,6 +4,9 @@ using ExcelPowerTools.Core.Csv;
 
 namespace ExcelPowerTools.Core.IoPipeline.IoBridge
 {
+    /// <summary>Which plant CSV a file is — the two exports carry different fixed layouts.</summary>
+    public enum PlantCsvKind { Inputs, Outputs }
+
     /// <summary>Resolved field positions of one plant CSV, tolerant of both export schemas.</summary>
     public sealed class CsvColumnsMap
     {
@@ -11,26 +14,78 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
         public int Name = -1, Node = -1, Offset = -1, Bit = -1, Board = -1, Type = -1;
         public IReadOnlyList<string> Headers;
 
+        /// <summary>The header's names resolved nothing — the kind's fixed positions are in use.</summary>
+        public bool LocatedByPosition;
+
         private Dictionary<string, int> _byNormalizedHeader;
 
         public static readonly string[] NameHeaders = { "signal id", "input name", "output name", "name" };
         public static readonly string[] BoardHeaders = { "card", "board number", "board" };
         public static readonly string[] TypeHeaders = { "type", "input type", "output type" };
 
-        /// <summary>Locates the header record and key columns; null when this is not a plant CSV.</summary>
-        public static CsvColumnsMap Locate(CsvDocument doc)
+        private const int MaxHeaderScan = 25;
+        private const int MaxSanitySample = 200;
+
+        /// <summary>
+        /// Locates the header record and key columns; null only when the file cannot be a plant
+        /// CSV of that kind at all. Two tiers — header content must never block a load (user
+        /// ruling 2026-08-24): first the header NAMES, scanned row by row REGARDLESS of row
+        /// widths (the ISPC export's data rows carry a trailing ";#;" marker column the header
+        /// line lacks, which made the old modal-width detector skip the header as ragged); then
+        /// the kind's legacy FIXED POSITIONS, accepted only when the data at those positions
+        /// actually looks like signals — a name that is text plus a numeric Node/Offset/Bit —
+        /// so a wrong file pick (a BusField.csv) still refuses instead of silently mis-joining
+        /// addresses.
+        /// </summary>
+        public static CsvColumnsMap Locate(CsvDocument doc, PlantCsvKind kind)
         {
             if (doc == null) return null;
             var rows = new List<string[]>(doc.Records.Count);
             foreach (CsvRecord rec in doc.Records) rows.Add(rec.Fields);
+            return Locate(rows, kind);
+        }
 
-            int headerIdx = CsvDetect.DetectHeaderRow(rows, "#");
-            if (headerIdx < 0) return null;
+        /// <summary>The same two-tier location over raw rows (a plant CSV open as a worksheet).</summary>
+        public static CsvColumnsMap Locate(IReadOnlyList<string[]> rows, PlantCsvKind kind)
+        {
+            if (rows == null) return null;
+            int limit = Math.Min(rows.Count, MaxHeaderScan);
 
-            string[] headers = rows[headerIdx];
+            // Tier 1: the first row whose NAMES resolve every key column is the header.
+            for (int i = 0; i < limit; i++)
+            {
+                CsvColumnsMap byName = TryMapByName(rows[i], i);
+                if (byName != null) return byName;
+            }
+
+            // Tier 2: the export tool's layout, by position. A "#"-marked row (if any) still
+            // anchors where data begins and what FieldFor can resolve of the real headers.
+            int headerIdx = -1;
+            for (int i = 0; i < limit; i++)
+                if (FirstField(rows[i]) == "#") { headerIdx = i; break; }
+
             var map = new CsvColumnsMap
             {
                 HeaderIndex = headerIdx,
+                Headers = headerIdx >= 0 ? rows[headerIdx] : new string[0],
+                LocatedByPosition = true,
+                Name = 1,
+                Type = 2,
+            };
+            if (kind == PlantCsvKind.Inputs) { map.Node = 11; map.Offset = 12; map.Bit = 13; map.Board = 15; }
+            else { map.Node = 4; map.Offset = 5; map.Bit = 6; map.Board = 8; }
+
+            if (!DataFitsPositions(rows, headerIdx, map)) return null;
+            map.IndexHeaders();
+            return map;
+        }
+
+        private static CsvColumnsMap TryMapByName(string[] headers, int rowIndex)
+        {
+            if (headers == null || headers.Length == 0) return null;
+            var map = new CsvColumnsMap
+            {
+                HeaderIndex = rowIndex,
                 Headers = headers,
                 Name = IoListLogic.FindColumn(headers, NameHeaders),
                 Node = IoListLogic.FindColumn(headers, "node"),
@@ -40,15 +95,43 @@ namespace ExcelPowerTools.Core.IoPipeline.IoBridge
                 Type = IoListLogic.FindColumn(headers, TypeHeaders),
             };
             if (map.Name < 0 || map.Node < 0 || map.Offset < 0 || map.Bit < 0 || map.Board < 0) return null;
-
-            map._byNormalizedHeader = new Dictionary<string, int>(StringComparer.Ordinal);
-            for (int i = 0; i < headers.Length; i++)
-            {
-                string key = IoListLogic.NormalizeHeader(headers[i]);
-                if (key.Length > 0 && !map._byNormalizedHeader.ContainsKey(key))
-                    map._byNormalizedHeader[key] = i;
-            }
+            map.IndexHeaders();
             return map;
+        }
+
+        /// <summary>At least one marker row, and most of the sample shaped like signals.</summary>
+        private static bool DataFitsPositions(IReadOnlyList<string[]> rows, int headerIdx, CsvColumnsMap map)
+        {
+            int need = Math.Max(Math.Max(map.Name, map.Board), Math.Max(map.Node, Math.Max(map.Offset, map.Bit)));
+            int sampled = 0, fit = 0;
+            for (int i = headerIdx + 1; i < rows.Count && sampled < MaxSanitySample; i++)
+            {
+                string[] f = rows[i];
+                string marker = FirstField(f);
+                if (marker != "@" && marker != "#") continue;   // "!" directives and decorations
+                sampled++;
+                if (f.Length <= need) continue;
+                string name = (f[map.Name] ?? "").Trim();
+                if (name.Length == 0 || CsvDetect.LooksNumeric(name)) continue;
+                if (CsvDetect.LooksNumeric(f[map.Node]) && CsvDetect.LooksNumeric(f[map.Offset]) &&
+                    CsvDetect.LooksNumeric(f[map.Bit]))
+                    fit++;
+            }
+            return sampled > 0 && fit * 5 >= sampled * 4;   // ≥ 80%
+        }
+
+        private static string FirstField(string[] row) =>
+            row != null && row.Length > 0 && row[0] != null ? row[0].Trim() : "";
+
+        private void IndexHeaders()
+        {
+            _byNormalizedHeader = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < Headers.Count; i++)
+            {
+                string key = IoListLogic.NormalizeHeader(Headers[i]);
+                if (key.Length > 0 && !_byNormalizedHeader.ContainsKey(key))
+                    _byNormalizedHeader[key] = i;
+            }
         }
 
         /// <summary>Field index for a queued action's normalized header; -1 when this file lacks it.</summary>

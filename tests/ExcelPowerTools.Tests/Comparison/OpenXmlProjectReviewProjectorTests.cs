@@ -91,9 +91,8 @@ namespace ExcelPowerTools.Tests.Comparison
                 state.RevisionRows.Select(item => item.SourceBaseName));
             Assert.Equal(new[] { "Trusted baseline", "Revision", "Revision", "Master" },
                 state.RevisionRows.Select(item => item.Role));
-            Assert.Equal(3, state.DiagnosticRows.Count(item =>
-                item.Code == OpenXmlProjectFindingCodes.NonFormulaValueContentUnmodeled &&
-                item.Severity == "Warning"));
+            Assert.DoesNotContain(state.DiagnosticRows, item =>
+                item.Code == OpenXmlProjectFindingCodes.NonFormulaValueContentUnmodeled);
             Assert.Equal("{\"schema\":\"project-review-v1\"}", state.StateJson);
             Assert.Contains(
                 @"C:\\private\\Reviewed.xlsx",

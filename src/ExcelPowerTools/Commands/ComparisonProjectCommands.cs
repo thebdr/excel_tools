@@ -31,9 +31,6 @@ namespace ExcelPowerTools.Commands
     /// </summary>
     public static class ComparisonProjectCommands
     {
-        private const long MaximumAggregateStoredCells = 2000000L;
-        private const long MaximumAggregateGridCells = 10000000L;
-
         private const string InputFilter =
             "Comparison project workbooks|*.xlsx;*.xlsm|" +
             "Excel workbooks (.xlsx, .xlsm)|*.xlsx;*.xlsm|All files|*.*";
@@ -249,6 +246,7 @@ namespace ExcelPowerTools.Commands
             var sheetBounds = new List<ComparisonInputSheetBounds>();
             int count = setup.OrderedArtifacts.Count;
             long aggregateStoredCells = 0;
+            long aggregateRetainedStoredCells = 0;
             long aggregateGridCells = 0;
             for (int index = 0; index < count; index++)
             {
@@ -272,38 +270,53 @@ namespace ExcelPowerTools.Commands
 
                 cancellationToken.ThrowIfCancellationRequested();
                 progress?.Report(new ComparisonBuildProgressUpdate(
-                    "Parsing formulas and values",
-                    "Reading the stored workbook evidence for " + artifact.BaseName,
+                    "Parsing comparison content",
+                    "Reading stored values, saved calculated values, and formulas from " + artifact.BaseName,
                     Scale(index, count, 36, 57),
                     true));
-                OpenXmlWorkbookSnapshot snapshot = OpenXmlWorkbookSnapshotAdapter.FromBytes(
+                OpenXmlWorkbookSnapshot parsedSnapshot = OpenXmlWorkbookSnapshotAdapter.FromBytes(
                     artifact.RevisionId,
                     bytes,
                     cancellationToken);
-                IReadOnlyList<ComparisonInputSheetBounds> workbookBounds = AnalyzeUsefulRanges(
+                OpenXmlWorkbookCompactionResult compaction =
+                    OpenXmlWorkbookSnapshotCompactor.CompactToUsefulRanges(
+                        parsedSnapshot,
+                        cancellationToken);
+                OpenXmlWorkbookSnapshot snapshot = compaction.Snapshot;
+                IReadOnlyList<ComparisonInputSheetBounds> workbookBounds = BuildInputBounds(
                     artifact,
-                    snapshot,
-                    cancellationToken);
+                    compaction.Worksheets);
                 sheetBounds.AddRange(workbookBounds);
-                aggregateStoredCells = checked(aggregateStoredCells +
-                    workbookBounds.Sum(item => item.Range.TotalStoredCellCount));
-                aggregateGridCells = checked(aggregateGridCells +
-                    workbookBounds.Sum(item => item.Range.GridCellCount));
-                if (aggregateStoredCells > MaximumAggregateStoredCells ||
-                    aggregateGridCells > MaximumAggregateGridCells)
+                long workbookStoredCells = workbookBounds.Sum(
+                    item => item.Range.TotalStoredCellCount);
+                long workbookRetainedStoredCells = workbookBounds.Sum(
+                    item => item.Range.RetainedStoredCellCount);
+                long workbookGridCells = workbookBounds.Sum(item => item.Range.GridCellCount);
+                aggregateStoredCells = checked(aggregateStoredCells + workbookStoredCells);
+                aggregateRetainedStoredCells = checked(
+                    aggregateRetainedStoredCells + workbookRetainedStoredCells);
+                aggregateGridCells = checked(aggregateGridCells + workbookGridCells);
+                ComparisonAlignmentEnvelopeAssessment envelope =
+                    ComparisonAlignmentEnvelopePolicy.Evaluate(
+                        workbookStoredCells,
+                        aggregateStoredCells,
+                        aggregateRetainedStoredCells,
+                        aggregateGridCells);
+                if (!envelope.CanAnalyze)
                 {
                     throw new InvalidDataException(BuildAlignmentEnvelopeError(
                         preparation.ProjectId,
                         artifact,
                         sheetBounds,
                         aggregateStoredCells,
-                        aggregateGridCells));
+                        aggregateGridCells,
+                        envelope.ExceededLimit));
                 }
                 snapshots.Add(artifact.RevisionId, snapshot);
                 long ignoredOutsideUsefulRange = workbookBounds.Sum(
                     item => item.Range.IgnoredOutsideRangeCellCount);
                 progress?.Report(new ComparisonBuildProgressUpdate(
-                    "Parsing formulas and values",
+                    "Parsing comparison content",
                     "Parsed " + artifact.BaseName + " (" + snapshot.Sheets.Count.ToString(
                         CultureInfo.InvariantCulture) + " sheet(s); " +
                     workbookBounds.Sum(item => item.Range.GridCellCount).ToString(
@@ -312,7 +325,7 @@ namespace ExcelPowerTools.Commands
                         ? ""
                         : "; ignored " + ignoredOutsideUsefulRange.ToString(
                             "N0", CultureInfo.InvariantCulture) +
-                          " physically stored blank cell(s) outside formula/value bounds") + ")",
+                          " physically stored blank cell(s) outside comparison-content bounds") + ")",
                     Scale(index + 1, count, 36, 57),
                     true));
             }
@@ -669,19 +682,17 @@ namespace ExcelPowerTools.Commands
             return start + (int)Math.Round((end - start) * (completed / (double)total));
         }
 
-        private static IReadOnlyList<ComparisonInputSheetBounds> AnalyzeUsefulRanges(
+        private static IReadOnlyList<ComparisonInputSheetBounds> BuildInputBounds(
             ComparisonProjectArtifactInfo artifact,
-            OpenXmlWorkbookSnapshot snapshot,
-            CancellationToken cancellationToken)
+            IReadOnlyList<OpenXmlWorksheetCompaction> worksheets)
         {
-            var result = new List<ComparisonInputSheetBounds>(snapshot.Sheets.Count);
-            foreach (var sheet in snapshot.Sheets)
+            var result = new List<ComparisonInputSheetBounds>(worksheets.Count);
+            foreach (OpenXmlWorksheetCompaction sheet in worksheets)
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 result.Add(new ComparisonInputSheetBounds(
                     artifact,
-                    sheet.Name,
-                    CanonicalUsefulRangeAnalyzer.Analyze(sheet.Snapshot, cancellationToken)));
+                    sheet.SheetName,
+                    sheet.Range));
             }
             return new ReadOnlyCollection<ComparisonInputSheetBounds>(result);
         }
@@ -691,7 +702,8 @@ namespace ExcelPowerTools.Commands
             ComparisonProjectArtifactInfo crossingArtifact,
             IReadOnlyList<ComparisonInputSheetBounds> sheetBounds,
             long aggregateStoredCells,
-            long aggregateGridCells)
+            long aggregateGridCells,
+            ComparisonAlignmentEnvelopeLimit exceededLimit)
         {
             long retainedStoredCells = sheetBounds.Sum(item => item.Range.RetainedStoredCellCount);
             long contentCells = sheetBounds.Sum(item => item.Range.ContentCellCount);
@@ -702,16 +714,17 @@ namespace ExcelPowerTools.Commands
                 : projectId.Substring(0, Math.Min(12, projectId.Length));
             var message = new StringBuilder(4096);
             message.Append("Issue ID: COMPARE-ENVELOPE-").AppendLine(projectToken)
-                .AppendLine("Source: ComparisonProjectCommands.LoadInputsAsync / content-aware-envelope-v2")
+                .AppendLine("Source: ComparisonProjectCommands.LoadInputsAsync / content-aware-envelope-v3")
                 .AppendLine()
-                .AppendLine("The cumulative comparison input exceeds the current in-process alignment envelope.")
-                .AppendLine("The revision below is where the cumulative total crossed a limit; it is not necessarily the only contributor.")
+                .AppendLine("The comparison is too large for safe in-memory alignment.")
+                .Append("Limit reached: ").AppendLine(DescribeAlignmentEnvelopeLimit(exceededLimit))
+                .AppendLine("The revision below is where that limit was crossed; earlier revisions may also contribute.")
                 .Append("Crossing revision: ").AppendLine(crossingArtifact.Path)
                 .AppendLine()
                 .AppendLine("Cumulative evidence read so far:")
                 .Append("- Physically stored cells: ").AppendLine(
                     aggregateStoredCells.ToString("N0", CultureInfo.InvariantCulture))
-                .Append("- Formula/value cells: ").AppendLine(
+                .Append("- Cells with stored values, saved calculated values, or formulas: ").AppendLine(
                     contentCells.ToString("N0", CultureInfo.InvariantCulture))
                 .Append("- Stored cells retained inside useful ranges: ").AppendLine(
                     retainedStoredCells.ToString("N0", CultureInfo.InvariantCulture))
@@ -724,14 +737,18 @@ namespace ExcelPowerTools.Commands
                     invalidCoordinates.ToString("N0", CultureInfo.InvariantCulture));
 
             message.AppendLine()
-                .AppendLine("Current limits across all revisions:")
-                .Append("- ").Append(MaximumAggregateStoredCells.ToString(
-                    "N0", CultureInfo.InvariantCulture)).AppendLine(" physically stored cells")
-                .Append("- ").Append(MaximumAggregateGridCells.ToString(
+                .AppendLine("Current audit and alignment limits:")
+                .Append("- ").Append(ComparisonAlignmentEnvelopePolicy.MaximumWorkbookStoredCells.ToString(
+                    "N0", CultureInfo.InvariantCulture)).AppendLine(" physically stored cells in any one revision")
+                .Append("- ").Append(ComparisonAlignmentEnvelopePolicy.MaximumAggregateStoredCells.ToString(
+                    "N0", CultureInfo.InvariantCulture)).AppendLine(" physically stored cells audited across all revisions")
+                .Append("- ").Append(ComparisonAlignmentEnvelopePolicy.MaximumAggregateRetainedStoredCells.ToString(
+                    "N0", CultureInfo.InvariantCulture)).AppendLine(" stored cells retained inside useful ranges")
+                .Append("- ").Append(ComparisonAlignmentEnvelopePolicy.MaximumAggregateGridCells.ToString(
                     "N0", CultureInfo.InvariantCulture)).AppendLine(" effective grid cells")
                 .AppendLine()
                 .AppendLine("Useful-range policy:")
-                .AppendLine("Each sheet is bounded by its first and last formula/value rows and columns. Physically stored blank or formatting-only cells outside that rectangle do not expand alignment. Blank-versus-missing evidence inside the rectangle is retained. The physical stored-cell limit still counts ignored cells because they must first be parsed and audited safely.")
+                .AppendLine("Each sheet is bounded by the first and last rows and columns containing a stored value, saved calculated value, or formula. Physically stored blank or formatting-only cells outside that rectangle are parsed under the per-input OOXML package safety limits, counted only against the larger audit ceilings, and then released before alignment. They do not consume the retained-evidence or effective-grid ceilings. Blank-versus-missing storage inside the rectangle is retained for alignment safety but is not reported as a content difference.")
                 .AppendLine()
                 .AppendLine("Largest effective sheets read so far:");
 
@@ -754,7 +771,7 @@ namespace ExcelPowerTools.Commands
                     .Append(" = ").Append(range.GridCellCount.ToString("N0", CultureInfo.InvariantCulture))
                     .Append(" grid | stored ").Append(range.TotalStoredCellCount.ToString(
                         "N0", CultureInfo.InvariantCulture))
-                    .Append(" | values/formulas ").Append(range.ContentCellCount.ToString(
+                    .Append(" | comparison-content cells ").Append(range.ContentCellCount.ToString(
                         "N0", CultureInfo.InvariantCulture))
                     .Append(" | retained ").Append(range.RetainedStoredCellCount.ToString(
                         "N0", CultureInfo.InvariantCulture))
@@ -772,9 +789,27 @@ namespace ExcelPowerTools.Commands
             message.AppendLine()
                 .AppendLine("Corrective actions:")
                 .AppendLine("1. Inspect the reported useful ranges for a stray nonblank cell far below or to the right of the real table.")
-                .AppendLine("2. Remove unintended values/formulas from a copy of the affected revision, save it, and retry.")
-                .AppendLine("3. If the reported bounds are genuine, split the revisions into smaller comparison projects for this alpha build.");
+                .AppendLine("2. Remove unintended stored values or formulas from a copy of the affected revision, save it, and retry.")
+                .AppendLine("3. If the reported content bounds are genuine, split the revisions into smaller comparison projects for this alpha build.");
             return message.ToString().TrimEnd();
+        }
+
+        private static string DescribeAlignmentEnvelopeLimit(
+            ComparisonAlignmentEnvelopeLimit exceededLimit)
+        {
+            switch (exceededLimit)
+            {
+                case ComparisonAlignmentEnvelopeLimit.WorkbookStoredCells:
+                    return "physically stored cells in one revision";
+                case ComparisonAlignmentEnvelopeLimit.AggregateStoredCells:
+                    return "physically stored cells audited across all revisions";
+                case ComparisonAlignmentEnvelopeLimit.AggregateRetainedStoredCells:
+                    return "stored cells retained inside useful ranges";
+                case ComparisonAlignmentEnvelopeLimit.AggregateGridCells:
+                    return "effective content-bounded grid cells";
+                default:
+                    return "unknown alignment limit";
+            }
         }
 
         private static string BuildUsefulRangeNotice(ComparisonInputBoundsSummary bounds)
@@ -786,10 +821,10 @@ namespace ExcelPowerTools.Commands
                 .AppendLine("Useful-range notice:")
                 .Append(bounds.IgnoredOutsideRangeCellCount.ToString(
                     "N0", CultureInfo.CurrentCulture))
-                .AppendLine(" physically stored blank/formatting-only cell(s) outside the first-to-last formula/value boundary were ignored for alignment. No formula or typed value was excluded. Blank-versus-missing evidence inside each useful range was retained.")
+                .AppendLine(" physically stored blank/formatting-only cell(s) outside the comparison-content boundary were ignored for alignment. No stored value, saved calculated value, or formula was excluded. Blank-versus-missing storage inside each useful range was retained for alignment safety, not reported as content.")
                 .Append("Effective comparison grid: ")
                 .Append(bounds.GridCellCount.ToString("N0", CultureInfo.CurrentCulture))
-                .Append(" / ").Append(MaximumAggregateGridCells.ToString(
+                .Append(" / ").Append(ComparisonAlignmentEnvelopePolicy.MaximumAggregateGridCells.ToString(
                     "N0", CultureInfo.CurrentCulture)).AppendLine(" cells.");
 
             foreach (ComparisonInputSheetBounds item in bounds.Sheets

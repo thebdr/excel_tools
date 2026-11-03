@@ -47,15 +47,16 @@ namespace ExcelPowerTools.Core.Comparison.Persistence
 
             if (result.IsComplete)
             {
-                state.ComparisonStatus = "Complete comparison — exact formula/value history is available.";
+                state.ComparisonStatus =
+                    "Complete comparison — history of stored values, saved calculated values, and formulas is available.";
                 state.DetailUnavailableReason =
                     "No formula or text change is available for character-level detail in this comparison.";
             }
             else if (result.History != null)
             {
                 state.ComparisonStatus =
-                    "Partial diagnostic comparison — Changes includes only safely aligned exact stored evidence. " +
-                    "Merge is disabled; see Diagnostics.";
+                    "Partial diagnostic comparison — Changes includes only safely aligned stored values, saved " +
+                    "calculated values, and formulas. Merge is disabled; see Diagnostics.";
                 state.DetailUnavailableReason =
                     "No formula or text change is available for character-level detail in the reviewable subset. " +
                     "See Diagnostics for excluded evidence.";

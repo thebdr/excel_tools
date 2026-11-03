@@ -77,7 +77,9 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     /// induction, ConveyorSys\SysGroupNN\Database\DB_Params|DB_Diag\ for upstream. Every input
     /// also accepts a flat copy directly under the root, and picking the backup folder that
     /// merely CONTAINS a PRODUCTION\ child descends into it. A missing file keeps its check off,
-    /// exactly like leaving the old per-file picker empty did.
+    /// exactly like leaving the old per-file picker empty did. SAFETY has no realtime tree at
+    /// all: a Siemens safety PLC consumes only the SCADA's Alarms_*.txt export ("Alarms List\"
+    /// beside the SWP, AlarmLists\, or flat).
     /// </summary>
     public static class SwpProductionTree
     {
@@ -93,7 +95,8 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
             result.Root = root;
 
             ApplyPlant(result, plantType);
-            Probe(root, result.Busfield, "IODriver\\BusField.csv", "BusField.csv");
+            if (result.Busfield.Applicable)
+                Probe(root, result.Busfield, "IODriver\\BusField.csv", "BusField.csv");
 
             switch (plantType)
             {
@@ -119,9 +122,14 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
                     break;
                 }
 
-                default:   // SAFETY: a Siemens PLC, no realtime tree — flat copies only
-                    Probe(root, result.PlantInputs, "Plant_Inputs.csv");
-                    ProbeAlarms(root, result, "");
+                default:
+                    // SAFETY: a Siemens safety PLC talks to SCADA over its own OPC UA server —
+                    // no IODriver busfield, no realtime input DB. Its one production input is
+                    // the SCADA's alarm export, which the safety system keeps in an "Alarms List"
+                    // folder beside the SWP itself (measured on FVT), so the SWP's own version
+                    // folder serves as the root; the sorter-style AlarmLists\ and a flat copy
+                    // are accepted too.
+                    ProbeAlarms(root, result, "Alarms List", "AlarmLists", "");
                     break;
             }
             return result;
@@ -132,6 +140,9 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         {
             bool sorter = plantType == SwpPlantType.Msc;
             bool upstream = plantType == SwpPlantType.Ups;
+            bool safety = plantType == SwpPlantType.Safety;
+            result.Busfield.Applicable = !safety;
+            result.PlantInputs.Applicable = !safety;
             result.DestinationParams.Applicable = sorter;
             result.BusExtendedDiagnostic.Applicable = sorter;
             result.Sensor.Applicable = upstream;

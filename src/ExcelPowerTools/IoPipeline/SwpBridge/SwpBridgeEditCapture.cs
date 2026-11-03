@@ -38,6 +38,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 else if (name == SwpBridgeWorkspace.DictionarySheetName) HandleDictionaryEdit(sheet, session);
                 else if (name == SwpBridgeWorkspace.GlossarySheetName) HandleGlossaryEdit(sheet, session);
                 else if (name == SwpBridgeWorkspace.OffsetsSheetName) HandleOffsetsEdit(sheet, session);
+                else if (name == SwpBridgeWorkspace.MnemonicsSheetName) HandleMnemonicsEdit(sheet, session);
                 else if (name == SwpBridgeWorkspace.StrobeSheetName) HandleStrobeEdit(sheet, session);
                 else if (name == SwpBridgeWorkspace.PreviewSheetName) SwpBridgePreview.Rerender(session);
                 // Home and _Log revert on the next refresh; stray edits there are harmless.
@@ -65,6 +66,12 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     cancel = true;
                     session.Queue.SetInclude(action.ActionId, !action.Include);
                     session.SaveSidecarNow();
+                    if (action.FldGroup.Length > 0)
+                    {
+                        // The whole FLD group flipped with it — every member's glyph must follow.
+                        SwpBridgeQueueSheet.Refresh(session);
+                        return;
+                    }
                     RunSuppressed(() =>
                         sheet.Cells((int)target.Row, SwpBridgeQueueSheet.IncludeColumn).Value =
                             action.Include ? SwpBridgeQueueSheet.IncludedGlyph : SwpBridgeQueueSheet.ExcludedGlyph);
@@ -126,6 +133,15 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                                 context.Mapped.Coordinate.SheetName, rowNumber);
                         }
                     }
+                    return;
+                }
+
+                // _Mnemonics: the Set column is the export gesture — one action, one column.
+                if (name == SwpBridgeWorkspace.MnemonicsSheetName && (int)target.Column == 1 &&
+                    (int)target.Row > SwpBridgeAuxSheets.MnemonicsHeaderRow)
+                {
+                    cancel = true;
+                    ExportMnemonicMap();
                     return;
                 }
 
@@ -403,12 +419,21 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     return true;
                 case SwpBridgeSpineSheet.ColFldMode:
                 {
-                    // Ticked = this row takes the OPPOSITE treatment of the workspace default;
-                    // cleared = it follows the default again (stored as the mode, not as "flip",
+                    // Ticked = this row takes the OPPOSITE treatment of the one it would take
+                    // anyway; cleared = it follows that again (stored as the mode, not as "flip",
                     // so changing the default later never silently reverses a row's decision).
-                    SwpMismatchMode workspaceDefault = session.Settings.MismatchMode;
+                    // "Anyway" is the destination-sheet rule where this row's SWP sheet matches
+                    // and the workspace default elsewhere — flipping against the default alone
+                    // would make a tick on a rule-governed sheet do nothing, which is a bug.
+                    SwpFldSheetRule sheetRule = SwpFldSheetRule.Create(
+                        session.Settings.FldSheetRulePattern, session.Settings.FldSheetRuleMode);
+                    string swpSheet = spineRow.Mapped != null && spineRow.Mapped.Ok
+                        ? (spineRow.Mapped.Coordinate.SheetName ?? "")
+                        : "";
+                    SwpMismatchMode rowDefault =
+                        sheetRule.ModeFor(swpSheet) ?? session.Settings.MismatchMode;
                     overrides.FldMode = IsChecked(typed)
-                        ? (workspaceDefault == SwpMismatchMode.Overwrite
+                        ? (rowDefault == SwpMismatchMode.Overwrite
                             ? SwpMismatchMode.AppendToDescription
                             : SwpMismatchMode.Overwrite)
                         : (SwpMismatchMode?)null;
@@ -428,8 +453,10 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                     // Same opposite-of-the-default rule as the FLD column, stored as the answer
                     // itself: an explicit tick also bypasses the default's automatic scope
                     // (generated + "P*" rows), so the gesture always does something visible.
+                    // The tick flips away from the treatment the row would take anyway — the
+                    // destination-sheet rule where its SWP sheet matches, the default elsewhere.
                     overrides.TrustConfigDescriptions = IsChecked(typed)
-                        ? !session.Settings.TrustConfigPlant
+                        ? SwpBridgeSpineSheet.RowConfigMode(session, spineRow) != SwpConfigMode.KeepConfigText
                         : (bool?)null;
                     return true;
                 case SwpBridgeSpineSheet.ColDesc1Override:
@@ -517,6 +544,39 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             if (!SwpBridgeAuxSheets.ParseOffsets(sheet)) return;
             SwpBridgeBuilder.RecomputeAndRerender(session);
             try { ExcelApp.App.StatusBar = "SWP Bridge: index rules saved (all sessions) and applied."; } catch { }
+        }
+
+        /// <summary>
+        /// Writes the live mnemonic map to a .tsv the user chooses — the artifact for version
+        /// control and for handing to a colleague. Import is the mirror: it REPLACES the stored
+        /// table, so a shared file lands whole rather than merging into a half-edited one.
+        /// </summary>
+        private static void ExportMnemonicMap()
+        {
+            try
+            {
+                string path = Dialogs.SaveFile(
+                    "Tab-separated (*.tsv)|*.tsv|All files (*.*)|*.*", "swp-mnemonic-map.tsv");
+                if (string.IsNullOrEmpty(path)) return;
+
+                System.IO.File.WriteAllLines(path, SwpBridgeAuxSheets.MnemonicExportLines());
+                try
+                {
+                    ExcelApp.App.StatusBar = "SWP Bridge: mnemonic map exported to " + path + ".";
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Info("The mnemonic map could not be exported: " + ex.Message);
+            }
+        }
+
+        private static void HandleMnemonicsEdit(dynamic sheet, SwpBridgeSession session)
+        {
+            if (!SwpBridgeAuxSheets.ParseMnemonics(sheet)) return;
+            SwpBridgeBuilder.RecomputeAndRerender(session);
+            try { ExcelApp.App.StatusBar = "SWP Bridge: mnemonic map saved (all sessions) and applied."; } catch { }
         }
 
         private static void HandleStrobeEdit(dynamic sheet, SwpBridgeSession session)

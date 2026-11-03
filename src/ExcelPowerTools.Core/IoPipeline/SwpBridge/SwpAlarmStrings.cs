@@ -30,6 +30,81 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     /// </summary>
     public static class SwpAlarmStrings
     {
+        // ---- ownership ----------------------------------------------------------------------
+
+        /// <summary>
+        /// Which of the offered exported alarm lists belong to THIS SWP, by file name.
+        ///
+        /// A production folder commonly holds the lists for a whole plant — or for every system of
+        /// one type — so they can be collected from one place; each controller then picks its own,
+        /// because the indexes are global. A foreign list is not damage and must not be parsed:
+        /// its mnemonics are shaped for another controller and every line of it would be reported
+        /// as malformed (the field case: "Alarms_S1_IL03.txt line 414: mnemonic
+        /// \"IL03.BELTWR0630\" has the wrong length", an induct list read by a sorter SWP).
+        ///
+        /// The authority is the SWP itself: every diagnostic sheet names the list it exports in
+        /// row 5, "Output filename". An SWP whose sheets declare NOTHING — an older file, or one
+        /// whose parameter was cleared — keeps every offered file: parsing a foreign list costs
+        /// warnings, while silently dropping the real one would leave the coherence leg with no
+        /// alarms at all and nothing to say about it.
+        /// </summary>
+        public static List<string> OwnedFiles(SwpWorkbookIndex index, IReadOnlyList<string> fileNames,
+            List<SwpLogEntry> log)
+        {
+            var kept = new List<string>();
+            if (fileNames == null) return kept;
+
+            var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (index != null)
+                foreach (SwpSheetIndex sheet in index.Sheets.Values)
+                {
+                    if (!sheet.IsDiagnosticSheet) continue;
+                    string name = (sheet.OutputFileName ?? "").Trim();
+                    if (name.Length > 0) declared.Add(name);
+                }
+
+            if (declared.Count == 0)
+            {
+                kept.AddRange(fileNames);
+                if (fileNames.Count > 0)
+                    log?.Add(SwpLogEntry.For(SwpLogSeverity.Info,
+                        "no SWP sheet names its exported alarm list (row 5, \"Output filename\") — " +
+                        "every offered file is read, so a list belonging to another controller " +
+                        "will report malformed mnemonics"));
+                return kept;
+            }
+
+            var skipped = new List<string>();
+            foreach (string name in fileNames)
+            {
+                if (declared.Contains((name ?? "").Trim())) kept.Add(name);
+                else skipped.Add(name);
+            }
+
+            foreach (string name in skipped)
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Info,
+                    "alarm strings " + name + " skipped — not part of the current SWP file, " +
+                    "whose sheets export " + Sample(declared)));
+
+            if (kept.Count == 0 && skipped.Count > 0)
+                log?.Add(SwpLogEntry.For(SwpLogSeverity.Warning,
+                    "none of the " + skipped.Count + " offered alarm-strings file(s) belong to this " +
+                    "SWP, which exports " + Sample(declared) +
+                    " — the alarm-strings check has nothing to work with"));
+
+            return kept;
+        }
+
+        /// <summary>A few declared names, so the log line stays readable on a 20-sheet SWP.</summary>
+        private static string Sample(HashSet<string> declared)
+        {
+            var names = new List<string>(declared);
+            names.Sort(StringComparer.OrdinalIgnoreCase);
+            if (names.Count <= 3) return string.Join(", ", names.ToArray());
+            return string.Join(", ", names.GetRange(0, 3).ToArray()) +
+                " and " + (names.Count - 3) + " more";
+        }
+
         // ---- parsing ------------------------------------------------------------------------
 
         public static List<SwpAlarmString> Parse(IEnumerable<string> lines, SwpPlantType plantType,

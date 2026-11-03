@@ -52,6 +52,63 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
+        public void Matching_automatic_strong_non_leading_headers_preserve_predata_identity()
+        {
+            OpenXmlWorkbookSnapshot before = Workbook(
+                "before",
+                Sheet("Inventory", 1, "InventoryCode",
+                    Text("A1", "Warehouse inventory"),
+                    Text("A2", "Prepared for weekly review"),
+                    Text("A3", "ID"), Text("B3", "Status"), Text("C3", "Quantity"),
+                    Text("A4", "ITM-001"), Text("B4", "Available"), Number("C4", "12"),
+                    Text("A5", "ITM-002"), Text("B5", "Allocated"), Number("C5", "8"),
+                    Text("A6", "ITM-003"), Text("B6", "Available"), Number("C6", "4")));
+            OpenXmlWorkbookSnapshot after = Workbook(
+                "after",
+                Sheet("Inventory", 1, "InventoryCode",
+                    Text("A1", "Warehouse inventory"),
+                    Text("A2", "Prepared for weekly review"),
+                    Text("A3", "ID"), Text("B3", "Status"), Text("C3", "Quantity"),
+                    Text("A4", "ITM-001"), Text("B4", "Available"), Number("C4", "12"),
+                    Text("A5", "ITM-002"), Text("B5", "Allocated"), Number("C5", "9"),
+                    Text("A6", "ITM-003"), Text("B6", "Available"), Number("C6", "4")));
+
+            OpenXmlComparisonProjectResult result = Build(
+                "matching-strong-non-leading-header",
+                before,
+                after);
+
+            Assert.True(result.IsComplete);
+            Assert.NotNull(result.History);
+            Assert.True(result.History!.AtomicTransitionCount > 0);
+            Assert.DoesNotContain(result.Findings, item =>
+                item.Code == OpenXmlProjectFindingCodes.NonLeadingHeader);
+            Assert.DoesNotContain(result.Findings, item =>
+                item.Severity >= DiagnosticSeverity.Correctable);
+
+            OpenXmlProjectSheetAlignment alignment = Assert.Single(Assert.Single(result.Edges).SheetAlignments);
+            Assert.True(alignment.IsComplete);
+            Assert.Equal(HeaderDecision.StrongHeader, alignment.BeforeHeader.Decision);
+            Assert.Equal(HeaderDecision.StrongHeader, alignment.AfterHeader.Decision);
+            Assert.Equal(2, alignment.BeforeHeader.AcceptedHeaderRowIndex);
+            Assert.Equal(2, alignment.AfterHeader.AcceptedHeaderRowIndex);
+            Assert.Equal(3, alignment.BeforeHeader.DataStartRowIndex);
+            Assert.Equal(3, alignment.AfterHeader.DataStartRowIndex);
+
+            OpenXmlAlignedSheetRevision beforeSheet = Assert.Single(Revision(result, "before").Sheets);
+            OpenXmlAlignedSheetRevision afterSheet = Assert.Single(Revision(result, "after").Sheets);
+            for (int predataRow = 0; predataRow <= 2; predataRow++)
+            {
+                Assert.True(alignment.RowAlignment!.TryMapBefore(predataRow, out int mappedRow));
+                Assert.Equal(predataRow, mappedRow);
+                Assert.Equal(
+                    beforeSheet.Rows.IdentityByPhysicalIndex[predataRow],
+                    afterSheet.Rows.IdentityByPhysicalIndex[predataRow]);
+            }
+            Assert.Empty(afterSheet.Rows.StructuralEvents);
+        }
+
+        [Fact]
         public void Repeated_blocks_and_spacers_with_duplicate_confirmed_keys_block_row_identity()
         {
             OpenXmlWorkbookSnapshot before = Workbook(
@@ -179,7 +236,7 @@ namespace ExcelPowerTools.Tests.Comparison
         }
 
         [Fact]
-        public void Formula_backed_keys_ignore_stale_caches_but_never_invent_uniqueness()
+        public void Formula_backed_duplicate_keys_use_sequence_without_inventing_key_uniqueness()
         {
             OpenXmlWorkbookSnapshot duplicateBefore = Workbook(
                 "duplicate-before",
@@ -197,20 +254,19 @@ namespace ExcelPowerTools.Tests.Comparison
             OpenXmlComparisonProjectResult duplicate =
                 Build("formula-key-duplicate", duplicateBefore, duplicateAfter);
 
-            Assert.False(duplicate.IsComplete);
-            Assert.Null(duplicate.History);
+            Assert.True(duplicate.IsComplete);
+            Assert.NotNull(duplicate.History);
             OpenXmlProjectSheetAlignment duplicateAlignment =
                 Assert.Single(Assert.Single(duplicate.Edges).SheetAlignments);
             Assert.Equal(KeyInferenceDecision.Ambiguous, duplicateAlignment.KeyInference.Decision);
             KeyCandidate duplicateCandidate = Assert.Single(duplicateAlignment.KeyInference.Candidates);
             Assert.Equal(1, duplicateCandidate.BeforeDuplicateCount);
             Assert.Equal(1, duplicateCandidate.AfterDuplicateCount);
-            Assert.Contains(duplicate.Findings, item =>
-                item.Code == OpenXmlProjectFindingCodes.RowAlignmentAmbiguous &&
-                item.Severity == DiagnosticSeverity.Correctable);
-            Assert.Contains(duplicate.Findings, item =>
-                item.Code == OpenXmlProjectFindingCodes.AxisIdentityIncomplete &&
-                item.Severity == DiagnosticSeverity.Correctable);
+            Assert.False(duplicateAlignment.RowAlignment!.HasAmbiguity);
+            Assert.Contains(duplicateAlignment.RowAlignment.Reasons,
+                item => item.Code == "row.repeated-exact-sequence");
+            Assert.DoesNotContain(duplicate.Findings,
+                item => item.Severity >= DiagnosticSeverity.Correctable);
 
             OpenXmlWorkbookSnapshot exactBefore = Workbook(
                 "exact-before",

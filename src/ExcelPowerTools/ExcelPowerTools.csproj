@@ -15,7 +15,7 @@
     <!-- Excel-DNA packs the add-in on build; keep the loose files too for debugging. -->
     <RunExcelDnaPack>true</RunExcelDnaPack>
     <!-- net48 has no .deps.json for Excel-DNA to inspect, so name managed dependencies explicitly. -->
-    <ExcelAddInInclude>DocumentFormat.OpenXml.dll;DocumentFormat.OpenXml.Framework.dll</ExcelAddInInclude>
+    <ExcelAddInInclude>DocumentFormat.OpenXml.dll;DocumentFormat.OpenXml.Framework.dll;DiffPlex.dll</ExcelAddInInclude>
     <!-- Core sources are COMPILED INTO this assembly (see the Compile Include below), so without
          explicit exports every public static Core helper auto-registers as a stray UDF — which is
          how SmartFill.Compose and CsvDescription.Compose collided by bare method name. Only
@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <!-- Core sources are linked into this assembly, so their runtime dependency must also be packed here. -->
+    <PackageReference Include="DiffPlex" Version="1.9.0" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
     <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
     <PackageReference Include="ExcelDna.Interop" Version="15.0.1">
@@ -42,6 +43,17 @@
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
+
+  <ItemGroup>
+    <SpreadsheetReviewLicense Include="..\..\licenses\*.txt" />
+    <EmbeddedResource Include="@(SpreadsheetReviewLicense)" Link="Licenses\%(Filename)%(Extension)" />
+    <None Include="@(SpreadsheetReviewLicense)" Link="licenses\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="CopySpreadsheetReviewLicenses" AfterTargets="Build">
+    <Copy SourceFiles="@(SpreadsheetReviewLicense)"
+          DestinationFolder="$(OutputPath)publish\licenses" SkipUnchangedFiles="true" />
+  </Target>
 
   <!--
     Compile ALL pure-logic sources straight into the add-in assembly (instead of a project

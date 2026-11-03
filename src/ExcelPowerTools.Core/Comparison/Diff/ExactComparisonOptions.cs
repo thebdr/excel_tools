@@ -2,8 +2,11 @@ namespace ExcelPowerTools.Core.Comparison.Diff
 {
     public sealed class ExactComparisonOptions
     {
-        public bool ComparePhysicalPresence { get; set; } = true;
+        // Blank-versus-missing storage is package evidence, not user content. Formula/value additions and
+        // removals are still reported independently, so physical presence stays opt-in.
+        public bool ComparePhysicalPresence { get; set; }
         public bool CompareCachedResults { get; set; } = true;
-        public bool CompareCachedResultsWhenFormulaChanges { get; set; }
+        // A changed formula and its changed stored calculation result are separate facts that both matter.
+        public bool CompareCachedResultsWhenFormulaChanges { get; set; } = true;
     }
 }

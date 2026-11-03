@@ -20,6 +20,16 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
         public string WorkspaceId = "";
         public string SwpRootFolder = "";
 
+        /// <summary>The session FILE every decision is written back to. Normally
+        /// <c>SwpRootFolder\swp-bridge.json</c>; a named session ("Save session as…") puts it
+        /// wherever the user chose, which is what lets one IO list drive two SWP systems.</summary>
+        public string SidecarPath = "";
+
+        /// <summary>The file decisions are written to right now: the named session's, or the root's
+        /// default sidecar when none was named. Save as moves it; nothing else does.</summary>
+        public string EffectiveSidecarPath =>
+            SidecarPath.Length > 0 ? SidecarPath : SwpBridgeSidecarStore.PathFor(SwpRootFolder);
+
         public SwpSidecarDocument Sidecar = new SwpSidecarDocument();
         public SwpBridgeSettings Settings => Sidecar.Settings;
         public SwpQueue Queue => Sidecar.Queue;
@@ -109,7 +119,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             try
             {
                 Sidecar.Overrides.RemoveAll(o => o.IsEmpty);
-                SwpBridgeSidecarStore.Save(SwpRootFolder, Sidecar);
+                SwpBridgeSidecarStore.SaveFile(EffectiveSidecarPath, Sidecar);
             }
             catch (Exception ex)
             {

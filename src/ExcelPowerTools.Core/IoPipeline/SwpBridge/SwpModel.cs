@@ -23,7 +23,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         TsRefL,
         Desc1T,
         Desc2U,
-        FormulaQ,        // description-1 formula text (mismatch append / wholesale rewrite)
+        FormulaQ,        // description-1 formula text (mismatch append / template rebuild)
         FormulaR,        // description-2 formula text
         StampAA,         // last-edit timestamp
         FormulaH,        // bit-row FUnit formula repair (=H{blockHeader})
@@ -163,14 +163,22 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
         public string GeneratedBy = "";
 
         /// <summary>
+        /// A Siemens PLC absolute input address ("I0.4") when the list addresses the PLC directly
+        /// — the safety PLC's lists, whose inputs carry no node because a distributed input is
+        /// unique PLC-wide. "" for ASC-addressed rows, which use Node/Offset/Bit.
+        /// </summary>
+        public string PlcAddress = "";
+
+        /// <summary>
         /// The I/O address as the SWP receives it (legacy List column C: no "I." prefix). An
         /// AS-I slave is its composed identity ("1M.24A" — line.slave, no trailing ".0.0"); a
-        /// Profinet module keeps the legacy "236.0.0". A generated row without a resolved
-        /// address yields "" — never a fragment.
+        /// Profinet module keeps the legacy "236.0.0"; a PLC-addressed input is its TIA form
+        /// ("I0.4"). A generated row without a resolved address yields "" — never a fragment.
         /// </summary>
         public string SwpAddress() =>
             AsiNode.Length > 0 ? AsiNode :
             IsBusModule ? Node + ".0.0" :
+            PlcAddress.Length > 0 ? PlcAddress :
             Node.Length == 0 ? "" : Node + "." + Offset + "." + Bit;
     }
 
@@ -246,6 +254,7 @@ namespace ExcelPowerTools.Core.IoPipeline.SwpBridge
     {
         public string SheetName = "";
         public string DdeTable = "";     // B4 sheet parameter
+        public string OutputFileName = ""; // B5 sheet parameter — the alarm list THIS sheet exports
         public string Description = ""; // B6 sheet parameter
         public bool IsDiagnosticSheet;   // "# Sheet parameters" marker in A2
         public Dictionary<string, SwpRowSnapshot> RowsByKey =

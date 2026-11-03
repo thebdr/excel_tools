@@ -153,41 +153,61 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             var log = new List<SwpLogEntry>();
 
             dashboard?.PostPhase("Filtering diagnostic mnemonics…");
+            // ONE table for the whole build: the filter, the producers and the mapping all read
+            // the same registry copy, so an edit on _Mnemonics reaches every stage at once.
+            SwpMnemonicMap mnemonicMap = SwpBridgeRegistry.GetMnemonicMap();
             var filterOptions = new SwpFilterOptions
             {
                 PlantType = settings.PlantType,
                 IncludeMnemonics = TryRegex(settings.IncludeRegex, log),
                 ExcludeMnemonics = TryRegex(settings.ExcludeRegex, log),
+                Map = mnemonicMap,
             };
             session.Entries = SwpMnemonicFilter.Run(session.IoRows, filterOptions, log);
 
-            if (settings.PlantType == SwpPlantType.Ups)
-            {
-                if (File.Exists(settings.SensorCsvPath))
+            // WHICH producers run is the mnemonic map's business, not this method's: a plant with
+            // no generate rows generates nothing, and unticking a row switches one off. The
+            // manager reports a row naming a producer that does not exist rather than skipping it.
+            dashboard?.PostPhase("Generating mnemonics…");
+            session.Entries.AddRange(CustomMnemonicsManager.RunAll(
+                mnemonicMap,
+                new SwpGeneratorContext
                 {
-                    dashboard?.PostPhase("Generating belt-photocell alarms…");
-                    session.Entries.AddRange(SwpUpsGenerators.GeneratePhotocellAlarms(
-                        File.ReadAllLines(settings.SensorCsvPath), session.IoRows, log));
-                }
-                if (File.Exists(settings.StrobeDeviceCsvPath) && session.Sidecar.StrobeTemplates.Count > 0)
-                {
-                    dashboard?.PostPhase("Generating strobe-device alarms…");
-                    session.Entries.AddRange(SwpUpsGenerators.GenerateStrobeAlarms(
-                        File.ReadAllLines(settings.StrobeDeviceCsvPath), session.Sidecar.StrobeTemplates, log));
-                }
-            }
+                    PlantType = settings.PlantType,
+                    IoRows = session.IoRows,
+                    StrobeTemplates = session.Sidecar.StrobeTemplates,
+                    Log = log,
+                    ReadSource = name =>
+                    {
+                        string path =
+                            name.Equals("Sensor", StringComparison.OrdinalIgnoreCase) ? settings.SensorCsvPath :
+                            name.Equals("StrobeDevice", StringComparison.OrdinalIgnoreCase) ? settings.StrobeDeviceCsvPath :
+                            "";
+                        return path.Length > 0 && File.Exists(path) ? File.ReadAllLines(path) : null;
+                    },
+                }));
             ThrowIfCancelled(session);
 
             dashboard?.PostPhase("Indexing the SWP sheets…");
             session.IndexRules = SwpBridgeRegistry.GetIndexRules();
             var targetSheets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var chuteMap = LoadChuteMap(settings, log);
+            var indexSources = new Dictionary<string, IReadOnlyDictionary<string, int>>(
+                StringComparer.OrdinalIgnoreCase);
+            if (chuteMap != null) indexSources["Destination_Parameters"] = chuteMap;
             var overrides = session.OverridesByMnemonic();
             foreach (DiagnosticEntry entry in session.Entries)
             {
                 SwpRowOverride o = overrides.TryGetValue(entry.Mnemonic, out SwpRowOverride v) ? v : null;
-                SwpMappedMnemonic mapped = SwpAddressMap.Map(entry.Mnemonic, settings.PlantType,
-                    settings.FirstLineId, settings.GroupIndex, o?.SwpDbIndex, chuteMap, session.IndexRules);
+                SwpMappedMnemonic mapped = mnemonicMap.Map(entry.Mnemonic, settings.PlantType,
+                    new SwpMapContext
+                    {
+                        FirstLineId = settings.FirstLineId,
+                        GroupIndex = settings.GroupIndex,
+                        DeviceIndexOverride = o?.SwpDbIndex,
+                        Rules = session.IndexRules,
+                        Sources = indexSources,
+                    });
                 if (mapped.Ok) targetSheets.Add(mapped.Coordinate.SheetName);
             }
             // Target sheets for the join, plus EVERY '#'-marked diagnostic sheet for the
@@ -209,13 +229,16 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 PlantType = settings.PlantType,
                 FirstLineId = settings.FirstLineId,
                 GroupIndex = settings.GroupIndex,
-                TrustConfigPlant = settings.TrustConfigPlant,
-                UpdateDescriptionFormulas = settings.UpdateDescriptionFormulas,
+                ConfigMode = settings.ConfigMode,
+                ConfigSheetRule = SwpConfigSheetRule.Create(
+                    settings.ConfigSheetRulePattern, settings.ConfigSheetRuleMode),
                 MismatchMode = settings.MismatchMode,
+                FldSheetRule = SwpFldSheetRule.Create(settings.FldSheetRulePattern, settings.FldSheetRuleMode),
                 BusFailureLang1 = busFailure1,
                 BusFailureLang2 = busFailure2,
                 GlossaryPairs = glossary,
                 GlossaryTranslateAlways = settings.GlossaryTranslateAlways,
+                SecondLanguage = ResolveSecondLanguageCode(settings),
                 Dictionary1 = session.Sidecar.Dictionary1,
                 Dictionary2 = session.Sidecar.Dictionary2,
                 ChuteMap = chuteMap,
@@ -262,7 +285,17 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
 
             // The official-rules content audits (duplicated strings, forbidden bits, priority
             // column, dashed locations) — log findings over the whole indexed SWP.
-            SwpContentChecks.Run(session.Index, log);
+            //
+            // The forbidden-bit check needs to know where the mnemonics actually LAND: an export
+            // tick on bit 31/63 is ignored by the plant and worth nothing to report, while a
+            // mnemonic landing there is a signal that will never be seen.
+            var targetedRows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (session.Model != null)
+                foreach (SwpSpineRow row in session.Model.Rows)
+                    if (row.Mapped != null && row.Mapped.Ok && row.Snapshot != null)
+                        targetedRows.Add(SwpContentChecks.RowKeyOf(
+                            row.Mapped.Coordinate.SheetName, row.Snapshot.RowNumber));
+            SwpContentChecks.Run(session.Index, log, targetedRows);
 
             AnnotateCoherence(session, log);
 
@@ -350,6 +383,7 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             SwpBridgeAuxSheets.RenderDictionary(workbook, session);
             SwpBridgeAuxSheets.RenderGlossary(workbook, session);
             SwpBridgeAuxSheets.RenderOffsets(workbook);
+            SwpBridgeAuxSheets.RenderMnemonics(workbook);
             SwpBridgeAuxSheets.RenderStrobeTemplates(workbook, session);
             SwpBridgeAuxSheets.RenderHome(workbook, session);
 
@@ -456,12 +490,31 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             {
                 session.Dashboard?.PostPhase("Checking the alarm strings…");
                 alarms = new List<SwpAlarmString>();
+
+                // A production folder often holds the lists for the whole plant; this SWP reads
+                // only the ones its own sheets export (row 5), so a sibling controller's list is
+                // skipped rather than parsed into a page of malformed-mnemonic warnings.
+                var offered = new List<string>();
+                foreach ((string path, string[] _) in session.AlarmStringsFiles)
+                    offered.Add(Path.GetFileName(path));
+                var owned = new HashSet<string>(
+                    SwpAlarmStrings.OwnedFiles(session.Index, offered, log),
+                    StringComparer.OrdinalIgnoreCase);
+
+                int read = 0;
                 foreach ((string path, string[] lines) in session.AlarmStringsFiles)
-                    alarms.AddRange(SwpAlarmStrings.Parse(lines, settings.PlantType,
-                        Path.GetFileName(path), log));
+                {
+                    string name = Path.GetFileName(path);
+                    if (!owned.Contains(name)) continue;
+                    read++;
+                    alarms.AddRange(SwpAlarmStrings.Parse(lines, settings.PlantType, name, log));
+                }
                 log.Add(SwpLogEntry.For(SwpLogSeverity.Info,
-                    alarms.Count + " exported alarm string(s) loaded from " +
-                    session.AlarmStringsFiles.Count + " file(s)"));
+                    alarms.Count + " exported alarm string(s) loaded from " + read + " file(s)" +
+                    (read == session.AlarmStringsFiles.Count
+                        ? ""
+                        : " (" + (session.AlarmStringsFiles.Count - read) +
+                          " not part of this SWP)")));
             }
 
             if (plantInputs != null || busfield != null || alarms != null || busExtended != null)

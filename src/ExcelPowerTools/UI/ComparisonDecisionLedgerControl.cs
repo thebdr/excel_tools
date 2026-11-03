@@ -815,8 +815,8 @@ namespace ExcelPowerTools.UI
         {
             switch (aspect)
             {
-                case ComparisonAspect.InteriorFill: return "Fill";
-                case ComparisonAspect.CachedResult: return "Cached value";
+                case ComparisonAspect.InteriorFill: return "Fill (context only)";
+                case ComparisonAspect.CachedResult: return "Saved calculated value";
                 default: return aspect.ToString();
             }
         }

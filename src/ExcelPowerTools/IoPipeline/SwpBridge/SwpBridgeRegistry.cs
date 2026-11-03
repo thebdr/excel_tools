@@ -37,6 +37,28 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
             catch { }
         }
 
+        /// <summary>The session FILE Setup last built or saved — what it comes back to, since a
+        /// named session lives wherever it was saved and a root only knows its default sidecar.</summary>
+        public static string GetLastSession()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RootKey))
+                    return key?.GetValue("LastSession") as string;
+            }
+            catch { return null; }
+        }
+
+        public static void SetLastSession(string path)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RootKey))
+                    key?.SetValue("LastSession", path ?? "");
+            }
+            catch { }
+        }
+
         /// <summary>
         /// The ordered language table: (name, glossary code, bus-failure text). The FIRST row is
         /// language 1 — the language of the SWP's Description 1 column; the CODE is the column
@@ -121,6 +143,56 @@ namespace ExcelPowerTools.IoPipeline.SwpBridge
                 if (lines == null || lines.Count == 0) return;   // never persist an empty table
                 using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RootKey))
                     key?.SetValue("IndexRules", lines.ToArray(), RegistryValueKind.MultiString);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// The MNEMONIC MAP — what a mnemonic is, where it lands, which producers run, and the
+        /// template sets. Same shape as the index rules: stored per user so it applies to every
+        /// system and session, seeded from the shipped table when nothing is stored yet.
+        ///
+        /// A stored table that no longer parses would be worse than no table at all, so a parse
+        /// producing nothing usable falls back to the shipped default rather than leaving the
+        /// bridge with an empty map that silently claims no mnemonics.
+        /// </summary>
+        public static SwpMnemonicMap GetMnemonicMap()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RootKey))
+                {
+                    if (key?.GetValue("MnemonicMap") is string[] lines && lines.Length > 0)
+                    {
+                        SwpMnemonicMap stored = SwpMnemonicMap.Parse(lines, null);
+                        if (stored != null && stored.Rules.Count > 0) return stored;
+                    }
+                }
+            }
+            catch { }
+            return SwpMnemonicMapDefaults.Official();
+        }
+
+        public static void SetMnemonicMap(SwpMnemonicMap map)
+        {
+            try
+            {
+                List<string> lines = map?.ToLines();
+                if (lines == null || lines.Count <= 1) return;   // header only = never persist
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RootKey))
+                    key?.SetValue("MnemonicMap", lines.ToArray(), RegistryValueKind.MultiString);
+            }
+            catch { }
+        }
+
+        /// <summary>Drops the stored table so the next read returns the shipped one — what the
+        /// sheet's "restore defaults" needs, and the way out of a table edited into a corner.</summary>
+        public static void ClearMnemonicMap()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RootKey))
+                    key?.DeleteValue("MnemonicMap", throwOnMissingValue: false);
             }
             catch { }
         }
